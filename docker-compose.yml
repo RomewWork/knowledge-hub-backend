@@ -9,9 +9,9 @@ services:
       POSTGRES_PASSWORD: 123456
       POSTGRES_DB: knowledge_hub
     ports:
-      # 主机端口用 15432：Windows 的临时端口池被改成了 1024-15000，
+      # 主机端口用 5432：Windows 的临时端口池被改成了 1024-15000，
       # Hyper-V/WinNAT 预留了 5358-5457 等区间，5432 被系统保留无法绑定
-      - '15432:5432'
+      - '5432:5432'
     volumes:
       - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/postgres:/var/lib/postgresql/data
       - ./init-scripts/postgresql:/docker-entrypoint-initdb.d
@@ -95,6 +95,34 @@ services:
     depends_on:
       mongodb:
         condition: service_healthy
+
+    # RustFS（S3 兼容对象存储）— PDF 抽图 / 原文件上传
+
+  # 文档：https://docs.rustfs.com/installation/docker/
+  rustfs:
+    image: rustfs/rustfs:latest
+    container_name: knowledge_hub_rustfs
+    restart: unless-stopped
+    ports:
+      - '9000:9000' # S3 API
+      - '9001:9001' # Console
+    environment:
+      RUSTFS_VOLUMES: /data/rustfs0
+      RUSTFS_ADDRESS: 0.0.0.0:9000
+      RUSTFS_CONSOLE_ADDRESS: 0.0.0.0:9001
+      RUSTFS_CONSOLE_ENABLE: 'true'
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin
+      RUSTFS_CORS_ALLOWED_ORIGINS: '*'
+      RUSTFS_UNSAFE_BYPASS_DISK_CHECK: 'true'
+    volumes:
+      - ${DOCKER_VOLUME_DIRECTORY:-.}/volumes/rustfs0:/data/rustfs0
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -f http://127.0.0.1:9000/health || exit 1']
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
 
 networks:
   default:

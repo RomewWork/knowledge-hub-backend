@@ -6,6 +6,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { MongooseModule } from '@nestjs/mongoose';
 import { DocumentEntity } from './document/entities/document.entity.js';
+import { StorageModule } from './storage/storage.module.js';
 
 @Module({
   imports: [
@@ -15,7 +16,7 @@ import { DocumentEntity } from './document/entities/document.entity.js';
       useFactory: (config: ConfigService) => ({
         type: 'postgres' as const,
         host: config.get<string>('POSTGRES_HOST', 'localhost'),
-        port: config.get<number>('POSTGRES_PORT', 15432),
+        port: config.get<number>('POSTGRES_PORT', 5432),
         username: config.get<string>('POSTGRES_USER', 'user'),
         password: config.get<string>('POSTGRES_PASSWORD', '123456'),
         database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
@@ -33,6 +34,7 @@ import { DocumentEntity } from './document/entities/document.entity.js';
       }),
     }),
     DocumentModule,
+    StorageModule,
   ],
   controllers: [AppController],
   providers: [AppService],
