@@ -7,6 +7,8 @@ import { TypeOrmModule } from '@nestjs/typeorm';
 import { MongooseModule } from '@nestjs/mongoose';
 import { DocumentEntity } from './document/entities/document.entity.js';
 import { StorageModule } from './storage/storage.module.js';
+import { MqModule } from './mq/mq.module.js';
+import { PipelineModule } from './pipeline/pipeline.module.js';
 
 @Module({
   imports: [
@@ -35,6 +37,8 @@ import { StorageModule } from './storage/storage.module.js';
     }),
     DocumentModule,
     StorageModule,
+    MqModule,
+    PipelineModule,
   ],
   controllers: [AppController],
   providers: [AppService],
