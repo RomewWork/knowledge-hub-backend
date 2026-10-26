@@ -22,9 +22,31 @@ curl.exe -sS -X PUT http://localhost:8080/documents/373052299741761536/publish`
 
 GET /_cat/indices?
 
+GET /kh_document/_search
+{
+"size": 100,
+"query": {
+"match_all": {}
+}
+}
+
 GET /kh_chunk/_search
 {
 "size": 100,
+"query": {
+"match_all": {}
+}
+}
+
+POST /kh_document/_delete_by_query
+{
+"query": {
+"match_all": {}
+}
+}
+
+POST /kh_chunk/_delete_by_query
+{
 "query": {
 "match_all": {}
 }

@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConsumeMessage } from 'amqplib';
 import { PipelineOrchestrator } from '../pipeline/pipeline.orchestrator.js';
-import { RAG_REINDEX_QUEUE } from './mq.constans.js';
-import { ReindexMessage } from './message/pipeline.messagets.js';
+import { RAG_REINDEX_QUEUE, SEARCH_INDEX_QUEUE } from './mq.constans.js';
+import { ReindexMessage, SearchIndexMessage } from './message/pipeline.messagets.js';
 import { RabbitMqService } from './rabbitmq.service.js';
 
 /**
@@ -21,6 +21,7 @@ export class DocumentPipelineConsumer {
     private readonly orchestrator: PipelineOrchestrator,
   ) {
     this.rabbit.registerHandler(RAG_REINDEX_QUEUE, (msg) => this.handleRag(msg));
+    this.rabbit.registerHandler(SEARCH_INDEX_QUEUE, (msg) => this.handleSearch(msg));
   }
 
   /** RAG：分块 → 向量化 → ES kh_chunk（dense_vector） */
@@ -30,6 +31,16 @@ export class DocumentPipelineConsumer {
       `[RAG] type=${body.type}, taskId=${body.taskId}, documentIds=${JSON.stringify(body.documentIds ?? [])}`,
     );
     await this.orchestrator.handleRagReindex(body.type, body.documentIds);
+  }
+
+  /** Search：文档级关键词索引（Elasticsearch kh_document） */
+  private async handleSearch(msg: ConsumeMessage) {
+    const body = this.parseJson<SearchIndexMessage>(msg);
+    this.logger.log(
+      `[Search] type=${body.type}, taskId=${body.taskId}, documentId=${body.documentId}`,
+    );
+
+    await this.orchestrator.handleSearchIndex(body.type, body.documentId, body.document);
   }
 
   private parseJson<T>(msg: ConsumeMessage): T {

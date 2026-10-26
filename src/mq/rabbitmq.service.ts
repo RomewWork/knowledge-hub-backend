@@ -1,8 +1,18 @@
 import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { EventEmitter } from 'node:events';
 import amqp, { AmqpConnectionManager, ChannelWrapper } from 'amqp-connection-manager';
 import { ConfirmChannel, ConsumeMessage } from 'amqplib';
-import { RAG_REINDEX_EXCHANGE, RAG_REINDEX_QUEUE, RAG_RK_BY_IDS } from './mq.constans.js';
+import {
+  RAG_REINDEX_EXCHANGE,
+  RAG_REINDEX_QUEUE,
+  RAG_RK_BY_IDS,
+  RAG_RK_DELETE,
+  SEARCH_INDEX_EXCHANGE,
+  SEARCH_INDEX_QUEUE,
+  SEARCH_RK_DELETE,
+  SEARCH_RK_INDEX,
+} from './mq.constans.js';
 
 export type MessageHandler = (msg: ConsumeMessage) => Promise<void> | void;
 
@@ -33,8 +43,10 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     const timeoutMs = Number(this.config.get<string>('RABBITMQ_CONNECT_TIMEOUT_MS', '15000'));
 
     this.logger.log(`正在连接 RabbitMQ：${safeUrl}（超时 ${timeoutMs}ms）`);
+
     this.connection = amqp.connect([url]);
-    this.connection.on('connect', (arg) => {
+    const connectionEvents = this.connection as unknown as EventEmitter;
+    connectionEvents.on('connect', (arg) => {
       const connectedUrl =
         typeof arg === 'object' && arg && 'url' in arg
           ? String((arg as { url?: string }).url ?? url)
@@ -42,11 +54,11 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(`RabbitMQ 已连接：${this.redactAmqpUrl(connectedUrl)}`);
     });
 
-    this.connection.on('disconnect', (err) =>
+    connectionEvents.on('disconnect', (err) =>
       this.logger.warn(`RabbitMQ 断开：${this.errorMessage(err?.err ?? err)}`),
     );
 
-    this.connection.on('connectFailed', (err) =>
+    connectionEvents.on('connectFailed', (err) =>
       this.logger.error(
         `RabbitMQ 连接失败：${this.errorMessage(err?.err ?? err)}（url=${safeUrl}）`,
       ),
@@ -136,8 +148,14 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     await ch.assertExchange(RAG_REINDEX_EXCHANGE, 'topic', { durable: true });
     await ch.assertQueue(RAG_REINDEX_QUEUE, { durable: true });
     await ch.bindQueue(RAG_REINDEX_QUEUE, RAG_REINDEX_EXCHANGE, RAG_RK_BY_IDS);
+    await ch.bindQueue(RAG_REINDEX_QUEUE, RAG_REINDEX_EXCHANGE, RAG_RK_DELETE);
 
-    this.logger.log('RabbitMQ 拓扑已声明（RAG）');
+    await ch.assertExchange(SEARCH_INDEX_EXCHANGE, 'topic', { durable: true });
+    await ch.assertQueue(SEARCH_INDEX_QUEUE, { durable: true });
+    await ch.bindQueue(SEARCH_INDEX_QUEUE, SEARCH_INDEX_EXCHANGE, SEARCH_RK_INDEX);
+    await ch.bindQueue(SEARCH_INDEX_QUEUE, SEARCH_INDEX_EXCHANGE, SEARCH_RK_DELETE);
+
+    this.logger.log('RabbitMQ 拓扑已声明（RAG + Search）');
   }
 
   private async bindConsumers(ch: ConfirmChannel) {

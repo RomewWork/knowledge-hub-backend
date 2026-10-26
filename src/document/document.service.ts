@@ -268,11 +268,12 @@ export class DocumentService {
    * 流程：
    * 1. 校验文档存在且状态为草稿 / 已发布
    * 2. 写库：status=Published，刷新 publishTime
-   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG 向量化）
+   * 3. 读 Mongo 正文，投递 RabbitMQ（RAG 向量化 + Search 全文索引）
    * 4. 投递失败只打日志，不回滚「已发布」状态
    *
    * 异步消费侧见 DocumentPipelineConsumer → PipelineOrchestrator：
-   * 分块(ChunkingService) → 嵌入 → ES(kh_chunk)
+   * - RAG：分块(ChunkingService) → 嵌入 → ES(kh_chunk)
+   * - Search：整篇快照 → ES(kh_document)
    */
 
   async publish(id: string) {
@@ -301,7 +302,7 @@ export class DocumentService {
 
     // MQ 失败不影响发布成功
     try {
-      await this.pipelinePublisher.afterPublish(saved);
+      await this.pipelinePublisher.afterPublish(saved, content);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`发布后管线投递失败（不影响发布）：documentId=${id}, error=${message}`);

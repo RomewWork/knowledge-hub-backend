@@ -8,12 +8,19 @@ import { ChunkingService } from './chunking.service.js';
 import { EmbeddingService } from './embedding.service.js';
 import { PipelineOrchestrator } from './pipeline.orchestrator.js';
 import { VectorIndexService } from './vector-index.service.js';
+import { SearchIndexService } from './search-index.service.js';
 
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: DocumentContent.name, schema: DocumentContentSchema }]),
   ],
-  providers: [ChunkingService, EmbeddingService, VectorIndexService, PipelineOrchestrator],
-  exports: [PipelineOrchestrator, VectorIndexService],
+  providers: [
+    ChunkingService,
+    EmbeddingService,
+    VectorIndexService,
+    SearchIndexService,
+    PipelineOrchestrator,
+  ],
+  exports: [PipelineOrchestrator, VectorIndexService, SearchIndexService],
 })
 export class PipelineModule {}
