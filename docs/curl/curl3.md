@@ -17,7 +17,7 @@ curl -s -X PUT "http://localhost:3000/documents/${DOC_ID}/publish"
 - **RAG**：Markdown 分块 → Embedding → 写入 Elasticsearch `kh_chunk`（dense_vector）
 
 
-curl.exe -sS -X PUT http://localhost:8080/documents/373052299741761536/publish`
+curl.exe -sS -X PUT http://localhost:8080/documents/373861566107357184/publish`
 ---
 
 GET /_cat/indices?

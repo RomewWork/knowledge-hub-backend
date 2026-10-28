@@ -4,6 +4,10 @@ import { EventEmitter } from 'node:events';
 import amqp, { AmqpConnectionManager, ChannelWrapper } from 'amqp-connection-manager';
 import { ConfirmChannel, ConsumeMessage } from 'amqplib';
 import {
+  KG_GRAPH_EXCHANGE,
+  KG_GRAPH_QUEUE,
+  KG_RK_BUILD_BY_IDS,
+  KG_RK_DELETE,
   RAG_REINDEX_EXCHANGE,
   RAG_REINDEX_QUEUE,
   RAG_RK_BY_IDS,
@@ -155,7 +159,12 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
     await ch.bindQueue(SEARCH_INDEX_QUEUE, SEARCH_INDEX_EXCHANGE, SEARCH_RK_INDEX);
     await ch.bindQueue(SEARCH_INDEX_QUEUE, SEARCH_INDEX_EXCHANGE, SEARCH_RK_DELETE);
 
-    this.logger.log('RabbitMQ 拓扑已声明（RAG + Search）');
+    await ch.assertExchange(KG_GRAPH_EXCHANGE, 'topic', { durable: true });
+    await ch.assertQueue(KG_GRAPH_QUEUE, { durable: true });
+    await ch.bindQueue(KG_GRAPH_QUEUE, KG_GRAPH_EXCHANGE, KG_RK_BUILD_BY_IDS);
+    await ch.bindQueue(KG_GRAPH_QUEUE, KG_GRAPH_EXCHANGE, KG_RK_DELETE);
+
+    this.logger.log('RabbitMQ 拓扑已声明（RAG + Search + KG）');
   }
 
   private async bindConsumers(ch: ConfirmChannel) {

@@ -8,8 +8,15 @@ import {
   SEARCH_INDEX_EXCHANGE,
   SEARCH_RK_DELETE,
   SEARCH_RK_INDEX,
+  KG_GRAPH_EXCHANGE,
+  KG_RK_BUILD_BY_IDS,
+  KG_RK_DELETE,
 } from './mq.constans.js';
-import { ReindexMessage, SearchIndexMessage } from './message/pipeline.messagets.js';
+import {
+  ReindexMessage,
+  SearchIndexMessage,
+  KgBuildMessage,
+} from './message/pipeline.messagets.js';
 import { RabbitMqService } from './rabbitmq.service.js';
 
 /**
@@ -32,12 +39,17 @@ export class DocumentPipelinePublisher {
     await Promise.all([
       await this.triggerRagReindex(document.id),
       await this.triggerSearchIndex(document, content),
+      await this.triggerKgBuild(document.id),
     ]);
   }
 
   /** 归档/删除后：通知 RAG / Search 按文档 ID 清理索引 */
   async afterUnpublish(documentId: string) {
-    await Promise.all([this.triggerRagDelete(documentId), this.triggerSearchDelete(documentId)]);
+    await Promise.all([
+      this.triggerRagDelete(documentId),
+      this.triggerSearchDelete(documentId),
+      this.triggerKgDelete(documentId),
+    ]);
   }
 
   /** RAG：按文档 ID 重建向量块 */
@@ -88,6 +100,29 @@ export class DocumentPipelinePublisher {
     this.logger.log(
       `ES 搜索索引${ok ? '已投递' : '投递失败'}：documentId=${document.id}, taskId=${message.taskId}`,
     );
+  }
+
+  /** KG：按文档 ID 建图谱 */
+  private async triggerKgBuild(documentId: string) {
+    const message: KgBuildMessage = {
+      taskId: randomUUID(),
+      type: 'BUILD_BY_DOC_IDS',
+      documentIds: [documentId],
+    };
+
+    const ok = await this.rabbit.publish(KG_GRAPH_EXCHANGE, KG_RK_BUILD_BY_IDS, message);
+    this.logger.log(
+      `KG 建图${ok ? '已投递' : '投递失败'}：documentId=${documentId}, taskId=${message.taskId}`,
+    );
+  }
+
+  private async triggerKgDelete(documentId: string) {
+    const message: KgBuildMessage = {
+      taskId: randomUUID(),
+      type: 'DELETE_BY_DOC_IDS',
+      documentIds: [documentId],
+    };
+    await this.rabbit.publish(KG_GRAPH_EXCHANGE, KG_RK_DELETE, message);
   }
 
   /** 组装写入 ES kh_document 的文档快照 */

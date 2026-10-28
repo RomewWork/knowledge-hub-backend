@@ -51,3 +51,27 @@ export interface PipelineDocument {
   createdAt?: Date | string | null;
   updatedAt?: Date | string | null;
 }
+
+/** 单个 chunk 的抽取结果 */
+export interface ExtractionResult {
+  chunkId?: string;
+  entities: ExtractedEntity[];
+  relations: ExtractedRelation[];
+}
+
+/** 图谱实体（如「张三」「入职流程」「知识库」） */
+export interface ExtractedEntity {
+  name: string;
+  /** PERSON / ORGANIZATION / CONCEPT / DOCUMENT / PROCESS / PRODUCT 等，见 docs/kg-extraction-schema.md */
+  type: string;
+  description?: string;
+  aliases?: string[];
+}
+
+/** 实体间关系：source -[relation]-> target */
+export interface ExtractedRelation {
+  source: string;
+  target: string;
+  relation: string;
+  weight?: number;
+}

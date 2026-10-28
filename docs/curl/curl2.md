@@ -5,7 +5,7 @@ curl -s -X POST http://localhost:3000/documents/upload/parse \
   -F 'createBy=10001' | jq
 ```
 
-curl.exe -sS -X POST http://localhost:3000/documents/upload/parse `  -F "file=@test-files/李先生_28岁_76761.pdf"`
+curl.exe -sS -X POST http://localhost:8080/documents/upload/parse `  -F "file=@test-files/01-travel-expense-policy.pdf"`
 -F "authorId=10001" -F "createBy=10001" | ConvertFrom-Json | Format-List
 
 ```bash
