@@ -88,8 +88,8 @@ export class DocumentReviewService {
     const review = await this.findPendingReviewOrThrow(reviewId);
 
     review.reviewResult = ReviewResult.Approved;
-    review.reviewerId = reviewerId ?? null;
-    review.reviewerName = reviewerName ?? '审核员';
+    review.reviewerId = reviewerId;
+    review.reviewerName = reviewerName;
     review.reviewComment = reviewComment ?? null;
     review.reviewedAt = new Date();
     await this.em.save(review);
@@ -120,9 +120,9 @@ export class DocumentReviewService {
     const review = await this.findPendingReviewOrThrow(reviewId);
 
     review.reviewResult = ReviewResult.Rejected;
-    review.reviewerId = reviewerId ?? null;
-    review.reviewerName = reviewerName ?? '审核员';
-    review.reviewComment = reviewComment.trim();
+    review.reviewerId = reviewerId;
+    review.reviewerName = reviewerName;
+    review.reviewComment = reviewComment.trim() ?? null;
     review.reviewedAt = new Date();
     await this.em.save(review);
 
