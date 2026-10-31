@@ -3,7 +3,8 @@ import { InjectEntityManager } from '@nestjs/typeorm';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model } from 'mongoose';
 import { EntityManager } from 'typeorm';
-import { DocumentEntity, DocumentStatus } from '../document/entities/document.entity.js';
+import { DocumentEntity } from '../document/entities/document.entity.js';
+import { DocumentStatus } from '../document/document-status.js';
 import {
   DocumentContent,
   DocumentContentDocument,

@@ -1,6 +1,5 @@
 import { IsBoolean, IsEnum, IsOptional, IsString } from 'class-validator';
-import { DocumentStatus } from '../entities/document.entity.js';
-
+import { DocumentStatus } from '../document-status.js';
 /** 创建文档 */
 export class CreateDocumentDto {
   /** 标题 */

@@ -32,7 +32,7 @@ export class DocumentPipelinePublisher {
   constructor(private readonly rabbit: RabbitMqService) {}
 
   /**
-   * 发布成功后调用：并行投递 RAG / Search。
+   * 发布成功后调用：并行投递 RAG / Search / KG。
    * @param content Mongo 正文，用于 Search 消息附带 content 前缀快照
    */
   async afterPublish(document: DocumentEntity, content?: string | null) {
@@ -43,7 +43,7 @@ export class DocumentPipelinePublisher {
     ]);
   }
 
-  /** 归档/删除后：通知 RAG / Search 按文档 ID 清理索引 */
+  /** 归档/删除后：通知 RAG / Search / KG按文档 ID 清理索引 */
   async afterUnpublish(documentId: string) {
     await Promise.all([
       this.triggerRagDelete(documentId),

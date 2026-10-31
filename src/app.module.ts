@@ -9,6 +9,7 @@ import { DocumentEntity } from './document/entities/document.entity.js';
 import { StorageModule } from './storage/storage.module.js';
 import { MqModule } from './mq/mq.module.js';
 import { PipelineModule } from './pipeline/pipeline.module.js';
+import { DocumentReviewEntity } from './document/entities/document.review.entity.js';
 
 @Module({
   imports: [
@@ -22,7 +23,7 @@ import { PipelineModule } from './pipeline/pipeline.module.js';
         username: config.get<string>('POSTGRES_USER', 'user'),
         password: config.get<string>('POSTGRES_PASSWORD', '123456'),
         database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
-        entities: [DocumentEntity],
+        entities: [DocumentEntity, DocumentReviewEntity],
         synchronize: false,
       }),
     }),
