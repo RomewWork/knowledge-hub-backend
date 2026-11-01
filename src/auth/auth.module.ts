@@ -2,21 +2,22 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { JwtModule } from '@nestjs/jwt';
 import { PassportModule } from '@nestjs/passport';
-import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AuthController } from './auth.controller.js';
 import { AuthService } from './auth.service.js';
+import { EmailService } from './email.service.js';
+import { EmailActivationService } from './email-activation.service.js';
 import { JwtStrategy } from './jwt.startegy.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
-import { UserService } from '../user/user.service.js';
-import { UserEntity } from '../user/entities/user.entity.js';
-import { RoleEntity } from '../user/entities/role.entity.js';
-import { UserRoleEntity } from '../user/entities/user-role.entity.js';
+import { MailerModule } from '@nestjs-modules/mailer';
+import { PasswordResetService } from './password-reset.service.js';
+import { UserModule } from '../user/user.module.js';
 
 @Module({
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
+    MailerModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],
@@ -24,12 +25,14 @@ import { UserRoleEntity } from '../user/entities/user-role.entity.js';
         secret: config.get<string>('JWT_SECRET', 'dev-secret-change-me'),
       }),
     }),
-    TypeOrmModule.forFeature([UserEntity, RoleEntity, UserRoleEntity]),
+    UserModule,
   ],
   controllers: [AuthController],
   providers: [
     AuthService,
-    UserService,
+    EmailService,
+    EmailActivationService,
+    PasswordResetService,
     JwtStrategy,
     {
       provide: APP_GUARD,
@@ -40,6 +43,6 @@ import { UserRoleEntity } from '../user/entities/user-role.entity.js';
       useClass: RolesGuard,
     },
   ],
-  exports: [AuthService, UserService],
+  exports: [AuthService, UserModule],
 })
 export class AuthModule {}
