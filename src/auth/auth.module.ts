@@ -10,6 +10,7 @@ import { EmailActivationService } from './email-activation.service.js';
 import { JwtStrategy } from './jwt.startegy.js';
 import { JwtAuthGuard } from './jwt-auth.guard.js';
 import { RolesGuard } from './roles.guard.js';
+import { PermissionsGuard } from './permissions.guard.js';
 import { MailerModule } from '@nestjs-modules/mailer';
 import { PasswordResetService } from './password-reset.service.js';
 import { UserModule } from '../user/user.module.js';
@@ -41,6 +42,10 @@ import { UserModule } from '../user/user.module.js';
     {
       provide: APP_GUARD,
       useClass: RolesGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: PermissionsGuard,
     },
   ],
   exports: [AuthService, UserModule],

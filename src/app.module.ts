@@ -11,10 +11,16 @@ import { StorageModule } from './storage/storage.module.js';
 import { MqModule } from './mq/mq.module.js';
 import { PipelineModule } from './pipeline/pipeline.module.js';
 import { RedisModule } from './redis/redis.module.js';
+import { TeamModule } from './team/team.module.js';
 import { DocumentReviewEntity } from './document/entities/document.review.entity.js';
 import { UserEntity } from './user/entities/user.entity.js';
 import { RoleEntity } from './user/entities/role.entity.js';
 import { UserRoleEntity } from './user/entities/user-role.entity.js';
+import { PermissionEntity } from './user/entities/permission.entity.js';
+import { RolePermissionEntity } from './user/entities/role-permission.entity.js';
+import { UserPermissionEntity } from './user/entities/user-permission.entity.js';
+import { TeamEntity } from './team/entities/team.entity.js';
+import { TeamMemberEntity } from './team/entities/team-member.entity.js';
 import { AuthModule } from './auth/auth.module.js';
 
 @Module({
@@ -29,7 +35,18 @@ import { AuthModule } from './auth/auth.module.js';
         username: config.get<string>('POSTGRES_USER', 'user'),
         password: config.get<string>('POSTGRES_PASSWORD', '123456'),
         database: config.get<string>('POSTGRES_DB', 'knowledge_hub'),
-        entities: [DocumentEntity, DocumentReviewEntity, UserEntity, RoleEntity, UserRoleEntity],
+        entities: [
+          DocumentEntity,
+          DocumentReviewEntity,
+          UserEntity,
+          RoleEntity,
+          UserRoleEntity,
+          PermissionEntity,
+          RolePermissionEntity,
+          UserPermissionEntity,
+          TeamEntity,
+          TeamMemberEntity,
+        ],
         synchronize: false,
       }),
     }),
@@ -65,6 +82,7 @@ import { AuthModule } from './auth/auth.module.js';
       }),
     }),
     RedisModule,
+    TeamModule,
   ],
   controllers: [AppController],
   providers: [AppService],

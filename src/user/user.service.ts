@@ -20,6 +20,7 @@ import { UpdateUserDto } from './dto/update-user.dto.js';
 import { UpdateProfileDto } from './dto/profile.dto.js';
 import { UserVO } from './vo/user.vo.js';
 import { DocumentEntity } from '../document/entities/document.entity.js';
+import { PermissionService } from './permission.service.js';
 
 @Injectable()
 export class UserService {
@@ -32,6 +33,7 @@ export class UserService {
     private readonly userRoleRepo: Repository<UserRoleEntity>,
     @InjectRepository(DocumentEntity)
     private readonly documentRepo: Repository<DocumentEntity>,
+    private readonly permissionService: PermissionService,
   ) {}
 
   async register(input: {
@@ -250,15 +252,19 @@ export class UserService {
     if (user.status !== 1) {
       throw new UnauthorizedException('账户已禁用');
     }
+    if (user.emailVerified === 0) {
+      throw new UnauthorizedException('账户未激活，请先验证邮箱');
+    }
     const ok = await compare(password, user.password);
     if (!ok) {
       throw new UnauthorizedException('用户名或密码错误');
     }
     const roles = await this.getRoleCodes(user.id);
-    return this.toAuthUser(user, roles);
+    const permissions = await this.permissionService.getUserPermissionCodes(user.id);
+    return this.toAuthUser(user, roles, permissions);
   }
 
-  toAuthUser(user: UserEntity, roles: string[]): AuthUser {
+  toAuthUser(user: UserEntity, roles: string[], permissions: string[]): AuthUser {
     return {
       userId: user.id,
       username: user.username,
@@ -266,6 +272,7 @@ export class UserService {
       email: user.email,
       avatar: user.avatar,
       roles,
+      permissions,
     };
   }
 
@@ -279,7 +286,8 @@ export class UserService {
       throw new UnauthorizedException('账户已禁用');
     }
     const roles = await this.getRoleCodes(userId);
-    return this.toAuthUser(user, roles);
+    const permissions = await this.permissionService.getUserPermissionCodes(userId);
+    return this.toAuthUser(user, roles, permissions);
   }
 
   async getUserIdsByRoleCode(roleCode: string): Promise<string[]> {
