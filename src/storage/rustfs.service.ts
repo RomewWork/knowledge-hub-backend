@@ -16,7 +16,21 @@ export interface UploadBytesOptions {
   prefix?: string;
 }
 
-/** RustFS 文件存储（S3 兼容） */
+/**
+ * RustFS 文件存储（S3 兼容）
+ *
+ * 职责：把 PDF 原件等二进制上传到 S3 兼容对象存储，返回可访问 URL 存进文档表；
+ * 不负责鉴权、删除和生命周期管理，对象由存储侧的策略清理。
+ *
+ * 关键依赖：@aws-sdk/client-s3、ConfigService（RUSTFS_ENDPOINT / ACCESS_KEY / SECRET_KEY / BUCKET / PUBLIC_URL / ENABLED）。
+ *
+ * 坑与取舍：
+ * 1. forcePathStyle 必须为 true：RustFS / MinIO 这类自建存储不支持虚拟主机风格域名。
+ * 2. 降级分两种情况：isEnabled() 为 false 时调用方只记 warn、跳过上传，文档照样入库但 fileUrl 为空，
+ *    后果是原件不能预览/下载，也无法从原件重新解析正文；而 enabled 但上传抛错时，调用方会把异常转成 400，整次创建失败。
+ *    排查线上「文档没有原件」时先看 RUSTFS_ENABLED 与 bucket 是否存在。
+ * 3. bucket 在 onModuleInit 里异步创建，失败只 warn，真正的重试发生在首次上传时。
+ */
 @Injectable()
 export class RustfsService implements OnModuleInit {
   private readonly logger = new Logger(RustfsService.name);
@@ -27,6 +41,12 @@ export class RustfsService implements OnModuleInit {
 
   constructor(private readonly config: ConfigService) {}
 
+  /**
+   * 初始化 S3 客户端并尝试建 bucket。
+   *
+   * 这里不 await ensureBucket，是为了不让对象存储的可用性阻塞服务启动；
+   * 代价是 bucket 缺失的问题会推迟到第一次上传才暴露（日志里已有 warn）。
+   */
   onModuleInit() {
     this.enabled = this.config.get<string>('RUSTFS_ENABLED', 'true').toLowerCase() !== 'false';
     if (!this.enabled) {
@@ -61,11 +81,18 @@ export class RustfsService implements OnModuleInit {
     });
   }
 
+  /** 是否真的能上传：既要开关打开，也要客户端已创建成功 */
   isEnabled(): boolean {
     return this.enabled && this.client != null;
   }
 
-  /** 上传字节，返回可访问 URL：{publicBase}/{bucket}/{key} */
+  /**
+   * 上传字节，返回可访问 URL：{publicBase}/{bucket}/{key}
+   *
+   * key 会拼上日期目录与随机 UUID，避免同名文件互相覆盖，也让对象在桶里按时间自然分布。
+   * 上传失败不吞异常，直接抛 503；当前文档上传会把异常转成 400 并中断创建，
+   * 所以调用方在调用前通常先问 isEnabled()，以免存储故障连累不依赖原件的主流程。
+   */
   async uploadBytes(bytes: Buffer | Uint8Array, options: UploadBytesOptions): Promise<string> {
     if (!this.isEnabled() || !this.client) {
       throw new ServiceUnavailableException('RustFS 未启用或未配置，无法上传文件');
@@ -94,6 +121,11 @@ export class RustfsService implements OnModuleInit {
     return url;
   }
 
+  /**
+   * 确保 bucket 存在：先 HEAD 探测，不存在再创建。
+   *
+   * 并发场景下两个请求可能同时创建，所以 CreateBucket 报已存在也视为成功。
+   */
   private async ensureBucket(): Promise<void> {
     if (!this.client) return;
 
@@ -117,6 +149,7 @@ export class RustfsService implements OnModuleInit {
   }
 }
 
+/** 按年月日生成对象目录前缀，便于按时间归档和批量清理 */
 function formatDatePath(): string {
   const d = new Date();
   const y = d.getFullYear();
@@ -125,11 +158,16 @@ function formatDatePath(): string {
   return `${y}/${m}/${day}`;
 }
 
+/**
+ * 清洗文件名主体：保留中英文、数字和少量安全符号，其余替换成下划线并截断。
+ * 目的是让 key 在各家 S3 实现和 URL 里都安全，避免特殊字符导致 403 或签名异常。
+ */
 function sanitizeBaseName(fileName: string): string {
   const base = fileName.replace(/\.[^.]+$/, '') || 'file';
   return base.replace(/[^\w\u4e00-\u9fff.-]+/g, '_').slice(0, 64);
 }
 
+/** 文件名没有扩展名时按 content-type 兜底，识别不了就返回空串 */
 function guessExt(contentType: string): string {
   switch (contentType) {
     case 'image/png':

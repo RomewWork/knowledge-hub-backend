@@ -7,6 +7,11 @@ import { cleanMarkdown, toMarkdownTable } from '../utils/markdown.util.js';
  *
  * 优先走自研 ZIP/XML 路径（按幻灯片输出 `## 幻灯片 N` + 标题/正文/表格）；
  * 解压或提取失败时降级到 officeparser AST → md。
+ *
+ * 注意：
+ * - 依赖 jszip 直接读 OOXML，只处理 ppt/slides 下的文本与表格，
+ *   图片、图表、SmartArt、备注页（notesSlides）都不会进入结果。
+ * - 自研路径是正则抠 XML，遇到形状嵌套/异常文件时可能提取不全，此时靠 officeparser 兜底。
  */
 export async function parsePptx(buffer: Buffer): Promise<string> {
   try {

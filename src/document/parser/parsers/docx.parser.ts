@@ -12,6 +12,10 @@ import { cleanMarkdown } from '../utils/markdown.util.js';
  * 3. cleanMarkdown 做换行与空白规范化。
  *
  * styleMap 同时覆盖英文与中文 Word 内置样式名，避免中文版 Word 标题丢失层级。
+ *
+ * 注意：
+ * - 依赖 mammoth 只转换正文结构，图片、文本框、批注、页眉页脚不会带出来。
+ * - 标题识别依赖 Word 的段落样式；手工加粗放大的「假标题」不会被识别成 Heading。
  */
 export async function parseDocx(buffer: Buffer): Promise<string> {
   const { value: html } = await mammoth.convertToHtml(

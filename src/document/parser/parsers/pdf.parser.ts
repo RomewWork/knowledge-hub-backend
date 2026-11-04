@@ -2,6 +2,13 @@ import { Logger } from '@nestjs/common';
 import { PDFParse } from 'pdf-parse';
 import { cleanMarkdown, toMarkdownTable } from '../utils/markdown.util.js';
 
+/**
+ * PDF 解析器（底层是 pdf-parse / pdfjs）。
+ *
+ * 注意：
+ * - 只抽取 PDF 的文本层，扫描件、纯图片 PDF 没有文本层，抽不出内容，需要先走 OCR。
+ * - 图片与表格提取都是「尽力而为」：失败只降级为纯文本，不中断整份文档。
+ */
 const logger = new Logger('PdfParser');
 
 /**

@@ -4,6 +4,18 @@ import { AuthGuard } from '@nestjs/passport';
 import { IS_PUBLIC_KEY } from './decorators/public.decorator.js';
 
 /**
+ * 全局 JWT 守卫：@Public 接口直接放行，其余交给 Passport('jwt') → JwtStrategy 验签并注入 user。
+ *
+ * 依赖 Reflector 读 @Public 元数据、JwtStrategy（含其内部对 AuthService.buildAuthUser 的调用）。
+ *
+ * 坑与取舍：
+ * - 通过 APP_GUARD 全局注册，是 JwtAuthGuard → RolesGuard → PermissionsGuard 中的第一个。
+ * - handleRequest 把验签失败、token 过期、账户被禁用（buildAuthUser 抛 UnauthorizedException）
+ *   统一收成 401，前端据此跳登录。
+ * - 这里只做「有没有登录」，不判角色/权限，否则会绕过 @Roles / @RequirePermission。
+ */
+
+/**
  * 全局 JWT 鉴权守卫
  *
  * <p>在 {@link AuthModule} 里通过 {@code APP_GUARD} 注册，默认所有 HTTP 接口都需要登录。</p>

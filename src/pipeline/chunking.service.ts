@@ -23,6 +23,12 @@ import { DocumentChunk } from './types/pipeline.types.js';
  * - RAG_CHUNK_SIZE：目标 token 数（默认 512）
  * - RAG_CHUNK_OVERLAP：重叠 token 数（默认 64）
  * - 换算：CHARS_PER_TOKEN=2，即 512 token ≈ 1024 字符
+ *
+ * <p>chunkId = sha256(`documentId:chunkIndex`) 的十六进制前 64 个字符（即完整摘要），
+ * 这是整条流水线幂等的基石：同一文档重新分块会得到同一批 _id，写 ES 是覆盖而不是追加。</p>
+ *
+ * <p>坑：改 RAG_CHUNK_SIZE / RAG_CHUNK_OVERLAP 会改变块数与序号，老块对不上新 _id，
+ * 不会被覆盖，只能靠重建前的全量删除清掉。</p>
  */
 @Injectable()
 export class ChunkingService {
@@ -55,6 +61,9 @@ export class ChunkingService {
 
   /**
    * 将一篇文档正文切成可索引的 DocumentChunk 列表。
+   *
+   * 按 Markdown 结构切而不是定长截断：标题/代码块边界天然是语义边界，
+   * 切在句子中间最容易丢上下文；chunkOverlap 用来兜住被切断的那一小段。
    *
    * @param params.content  Markdown 正文
    * @param params.documentId 文档雪花 ID（写入 chunk 元数据，供按文档删除）
@@ -97,6 +106,10 @@ export class ChunkingService {
       }
 
       chunks.push({
+        // chunkId 只由 documentId + 块序号决定：
+        // 同文档重复分块 → 同一批 _id，ES 覆盖写而不是追加（幂等基石）；
+        // 带 documentId 是为了跨文档不撞号；内容不进哈希，正文小改也能原地覆盖。
+        // sha256 hex 摘要本身就是 64 个字符，slice 只是把长度约定写死
         chunkId: createHash('sha256')
           .update(`${documentId}:${chunks.length}`)
           .digest('hex')
@@ -115,6 +128,7 @@ export class ChunkingService {
       });
     }
 
+    // 总块数要等切完才知道：先收集再统一回填，避免边切边猜
     const total = chunks.length;
     chunks.forEach((c) => {
       c.totalChunks = total;

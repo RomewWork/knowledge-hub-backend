@@ -5,6 +5,17 @@ import { ROLES_KEY } from './decorators/roles.decorator.js';
 import { RoleCodeValue } from '../common/constants/roles.js';
 
 /**
+ * 角色守卫：按 @Roles 声明的角色码校验 request.user.roles（任一命中即通过）。
+ *
+ * 依赖 Reflector 读元数据、RoleCode 常量、AuthUser（角色来自数据库实时回查，不来自 token）。
+ *
+ * 坑与取舍：
+ * - 未标 @Roles 的接口一律放行（只要求已登录），权限收敛必须显式标注，漏标不会报错。
+ * - 与 PermissionsGuard 是「同时满足」关系：两个装饰器都标时，角色与权限码都得过。
+ * - 方法级元数据覆盖类级（getAllAndOverride）。
+ */
+
+/**
  * 角色守卫（RBAC 简化版）
  *
  * <p>在 {@link JwtAuthGuard} 之后执行（同为 APP_GUARD，按注册顺序：先 JWT、后 Roles）。</p>

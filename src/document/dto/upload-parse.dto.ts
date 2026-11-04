@@ -13,19 +13,11 @@ export class UploadParseDto {
 
   @IsOptional()
   @IsString()
-  authorId?: string;
-
-  @IsOptional()
-  @IsString()
   tags?: string;
 
   @IsOptional()
   @IsString()
   remark?: string;
-
-  @IsOptional()
-  @IsString()
-  createBy?: string;
 
   @IsOptional()
   @Transform(({ value }) => {

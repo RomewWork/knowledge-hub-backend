@@ -54,9 +54,4 @@ export class CreateDocumentDto {
   @IsOptional()
   @IsBoolean()
   isPublic?: boolean;
-
-  /** 创建人 ID */
-  @IsOptional()
-  @IsString()
-  createBy?: string;
 }

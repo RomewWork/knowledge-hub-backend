@@ -3,6 +3,15 @@
  *
  * 交换机：rag.reindex / search.index / kg.graph
  * 队列名带 `kh.` 前缀，避免和本机同时跑的其他项目冲突。
+ *
+ * 命名规则：
+ * 1. 交换机 `<业务域>.<用途>.exchange`，三套链路各一个 topic 交换机。
+ * 2. 队列统一 `kh.<业务域>.<用途>.queue`，共用一个 `kh.` 前缀便于在管理台按前缀筛选和清理。
+ * 3. 路由键 `<业务域>.<用途>.<动作>`，如 rag.reindex.by_ids / *_delete。
+ *
+ * 坑：这些字面量必须与 RabbitMqService.assertTopology 里声明的完全一致；
+ * 改名字时两边不同步会让消费者 consume 报 404 NOT_FOUND，且旧队列里的消息无人消费。
+ * 文件名 constans 是历史拼写，改名会牵动所有 import，保持原样。
  */
 
 /** RAG 重建索引交换机（topic） */

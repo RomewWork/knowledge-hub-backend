@@ -8,6 +8,14 @@
  * - 3 PendingReview：待审核，不进索引，审核通过后才发布
  *
  * 是否走审核由环境变量 DOCUMENT_REQUIRE_APPROVAL 控制（见 DocumentReviewService）。
+ *
+ * 主要流转：
+ * - Draft --publish--> Published（需审模式下先进 PendingReview）
+ * - Archived --publish--> Published（重新上架，无论是否开审核都直接发布）
+ * - Published --archive--> Archived，Published --saveAsDraft--> Draft
+ * - PendingReview --approve--> Published，PendingReview --reject--> Draft
+ *
+ * 下面的 canXxx 只做「能否」判断，不落库、不同步索引，调用方仍需自己处理状态与 MQ 投递。
  */
 
 export enum DocumentStatus {

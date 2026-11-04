@@ -17,14 +17,25 @@ import { SearchIndexService } from './search-index.service.js';
 import { GraphBuildService } from './graph-build.service.js';
 
 /**
- * 发布后知识管线编排器
+ * 发布后知识管线编排器（索引流水线域的总入口）
  *
- * <p>RAG：分块 → Embedding → ES kh_chunk</p>
- * <p>Search：整篇快照 → ES kh_document</p>
+ * <p>按消息 type 分发到三条互相独立的链路：</p>
+ * <p>RAG：分块 → Embedding → ES kh_chunk（块 + 向量）</p>
+ * <p>Search：回查元数据与正文 → ES kh_document（整篇一条）</p>
  * <p>KG：分块 → 抽实体关系 → Neo4j</p>
  *
  * <p>由 {@link DocumentPipelineConsumer} 在消费到 MQ 消息后调用；</p>
  * <p>本类负责「加载文档 → 调具体服务」，不直接碰 RabbitMQ。</p>
+ *
+ * <p>关键依赖：Postgres 的 EntityManager（文档元数据）、Mongo 的 DocumentContent 模型（正文），
+ * 以及 ChunkingService / EmbeddingService / VectorIndexService / SearchIndexService / GraphBuildService。</p>
+ *
+ * <p>坑与取舍：</p>
+ * <p>- 消息里只带 documentId，正文一律回查 Postgres + Mongo（handleSearchIndex 已不再依赖消息快照）：
+ * 消息体小、也不会因为发布后内容又被改过而写入脏快照，代价是消费端多两次库查询。</p>
+ * <p>- 每篇文档单独 try/catch：一篇失败不影响同批其余文档，也不至于让整批被 MQ 反复重投。</p>
+ * <p>- 下游服务在 ES/Neo4j 不可用时是静默跳过（不抛错），编排层感知不到，所以索引可能「假成功」，
+ * 排障时先看下游各自的连接日志。</p>
  */
 @Injectable()
 export class PipelineOrchestrator {
@@ -75,21 +86,25 @@ export class PipelineOrchestrator {
 
   /**
    * 处理 Search 索引消息。
-   * INDEX：消息内已带文档快照，直接写入 ES kh_document。
+   *
+   * 消息里现在只带 documentId，不再携带文档快照：INDEX 时按 id 回查 Postgres 元数据 +
+   * Mongo 正文，再整篇写入 ES kh_document。这样消息体小，且写入的永远是库里的当前内容。
    * DELETE：按 documentId 删除。
    */
-  async handleSearchIndex(type: string, documentId: string, document?: Record<string, unknown>) {
+  async handleSearchIndex(type: string, documentId: string) {
     if (type === 'DELETE') {
       await this.searchIndexService.deleteDocument(documentId);
       return;
     }
 
     if (type === 'INDEX') {
-      if (!document) {
-        this.logger.warn(`Search INDEX 消息缺少 document 快照：documentId=${documentId}`);
+      const docs = await this.loadDocumentsByIds([documentId]);
+      const doc = docs[0];
+      if (!doc) {
+        this.logger.warn(`Search INDEX 文档不存在：documentId=${documentId}`);
         return;
       }
-      await this.searchIndexService.indexDocument(document);
+      await this.searchIndexService.indexDocument(this.toSearchIndexDoc(doc));
       return;
     }
 
@@ -167,7 +182,12 @@ export class PipelineOrchestrator {
     return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
   }
 
-  /** 按 ID 列表加载元数据 + Mongo 正文 */
+  /**
+   * 按 ID 列表加载元数据 + Mongo 正文。
+   *
+   * 逐条查询而非一次 IN：正文在 Mongo 里要按 contentId 关联，逐条更好读；
+   * 发布批量通常不大，这点 N+1 可以接受。单条查不到就跳过，不阻断整批。
+   */
   private async loadDocumentsByIds(ids: string[]): Promise<PipelineDocument[]> {
     const result: PipelineDocument[] = [];
     for (const id of ids) {
@@ -183,7 +203,11 @@ export class PipelineOrchestrator {
     return result;
   }
 
-  /** 加载全部已发布且未删除的文档（BUILD_ALL） */
+  /**
+   * 加载全部已发布且未删除的文档（BUILD_ALL）。
+   *
+   * 用于整图重建 / 索引 mapping 变更后的回填；未发布和已删除的文档不参与，避免把草稿写进图谱。
+   */
   private async loadAllPublishedDocuments(): Promise<PipelineDocument[]> {
     const docs = await this.em.find(DocumentEntity, {
       where: { deleted: false, status: DocumentStatus.Published },
@@ -196,6 +220,27 @@ export class PipelineOrchestrator {
       result.push(this.toPipelineDoc(doc, contentDoc?.content ?? ''));
     }
     return result;
+  }
+
+  /** Postgres 元数据 + Mongo 全文 → ES kh_document 文档 */
+  private toSearchIndexDoc(doc: PipelineDocument): Record<string, unknown> {
+    return {
+      id: doc.id,
+      title: doc.title,
+      summary: doc.summary ?? null,
+      content: doc.content ?? '',
+      categoryId: doc.categoryId ?? null,
+      tags: doc.tags ?? null,
+      status: doc.status,
+      isPublic: doc.isPublic,
+      viewCount: doc.viewCount,
+      likeCount: doc.likeCount,
+      commentCount: doc.commentCount,
+      authorId: doc.authorId ?? null,
+      publishTime: this.toIsoDate(doc.publishTime),
+      createdAt: this.toIsoDate(doc.createdAt),
+      updatedAt: this.toIsoDate(doc.updatedAt),
+    };
   }
 
   /** Postgres 实体 + Mongo 正文 → 管线统一 DTO */

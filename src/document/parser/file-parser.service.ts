@@ -10,9 +10,13 @@ import { getExtension } from './utils/markdown.util.js';
 /** 支持解析的文件扩展名 */
 const SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md']);
 
+/** 解析入参：来自 multer 的内存文件（文件不落盘，直接传 Buffer） */
 export interface ParseInput {
+  /** 原始文件名，用来取扩展名并写日志 */
   originalname: string;
+  /** 文件完整字节内容 */
   buffer: Buffer;
+  /** 可选：文件字节数，调用方透传，解析逻辑本身不依赖 */
   size?: number;
 }
 
@@ -21,6 +25,10 @@ export interface ParseInput {
  *
  * 按扩展名分发到各 parser；PDF 在对象存储可用时注入图片上传回调。
  * 解析结果为空或格式不支持时抛 BadRequestException。
+ *
+ * 注意：分发表现在 SUPPORTED_EXTENSIONS 和 parse 的 switch 上，
+ * MIME 不参与判定（上传的 mimetype 只用于原文件上传）；扩展名缺失或不支持会直接 400。
+ * 所有 parser 统一产出 Markdown，上层拿到的就是可入库的正文。
  */
 @Injectable()
 export class FileParserService {

@@ -27,6 +27,18 @@ import { AuthUser } from '../auth/auth-user.interface.js';
  * - 元数据：PostgreSQL（kh_document）
  * - 正文：MongoDB（document_content）
  * - 关联：content_id ↔ Mongo _id，documentId ↔ 文档 id
+ *
+ * 关键依赖：EntityManager（PG 查询）、contentModel（Mongo 正文）、
+ * pipelinePublisher（MQ 索引投递）、reviewService（审核开关 / 提审）。
+ *
+ * 状态机：Draft(0) / Published(1) / Archived(2) / PendingReview(3)。
+ * 流转入口：publish / directPublish / archive / saveAsDraft / 审核接口，
+ * PATCH 只兼容 Published→Draft 一种变更，其余变更会被拒。
+ *
+ * 坑与取舍：
+ * - 双写不一致：先写 Mongo 正文再写 PG 元数据，PG 失败会回滚删正文；两步之间正文是脏的。
+ * - 索引同步走 MQ 异步投递，失败只告警、不回滚状态，索引与库可能短暂不一致。
+ * - publish() 语义受 DOCUMENT_REQUIRE_APPROVAL 影响：需审时只提审、不建索引。
  */
 @Injectable()
 export class DocumentService {
@@ -51,7 +63,7 @@ export class DocumentService {
    * 流程：生成雪花 ID → 写 Mongo 正文（拿 ObjectId）→ 写 Postgres 元数据
    * 若 Postgres 写入失败，回滚删除已写入的 Mongo 正文，避免脏数据
    */
-  async create(dto: CreateDocumentDto, actor?: AuthUser) {
+  async create(dto: CreateDocumentDto, actor: AuthUser) {
     const requestedStatus = dto.status ?? DocumentStatus.Draft;
     // 创建时不允许直接设为 Archived / PendingReview
     if (requestedStatus !== DocumentStatus.Draft && requestedStatus !== DocumentStatus.Published) {
@@ -82,6 +94,8 @@ export class DocumentService {
     const contentId = String(contentDoc._id);
 
     try {
+      // 审计字段一律取登录用户（authorId / createBy / updateBy = actor.userId），
+      // DTO 中已移除 createBy / updateBy，请求体里传 authorId 在此也不生效，客户端无法伪造作者
       const doc = this.em.create(DocumentEntity, {
         id,
         title: dto.title,
@@ -89,7 +103,7 @@ export class DocumentService {
         summary: dto.summary,
         categoryId: dto.categoryId,
         teamId: dto.teamId,
-        authorId: dto.authorId ?? actor?.userId,
+        authorId: actor.userId,
         coverImage: dto.coverImage,
         tags: dto.tags,
         status,
@@ -98,8 +112,8 @@ export class DocumentService {
         wordCount,
         // 创建即发布时，记录发布时间
         publishTime: status === DocumentStatus.Published ? new Date() : null,
-        createBy: dto.createBy ?? actor?.userId,
-        updateBy: dto.createBy ?? actor?.userId,
+        createBy: actor.userId,
+        updateBy: actor.userId,
         deleted: false,
       });
 
@@ -195,8 +209,9 @@ export class DocumentService {
    * - 有 content：同步更新 Mongo 正文，并递增 version
    * - 仅改 summary：同步更新 Mongo contentSummary
    * - 其余字段只更新 Postgres 元数据
+   * - 审计字段：updateBy 恒取 actor.userId，DTO 无法覆盖；createBy 创建后不再变更
    */
-  async update(id: string, dto: UpdateDocumentDto, actor?: AuthUser) {
+  async update(id: string, dto: UpdateDocumentDto, actor: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -275,25 +290,19 @@ export class DocumentService {
     if (dto.summary !== undefined) doc.summary = dto.summary;
     if (dto.categoryId !== undefined) doc.categoryId = dto.categoryId;
     if (dto.teamId !== undefined) doc.teamId = dto.teamId;
+    // authorId 允许显式覆盖（作者转交场景）；createBy / updateBy 只能由服务端写入
     if (dto.authorId !== undefined) doc.authorId = dto.authorId;
     if (dto.coverImage !== undefined) doc.coverImage = dto.coverImage;
     if (dto.tags !== undefined) doc.tags = dto.tags;
     if (dto.remark !== undefined) doc.remark = dto.remark;
     if (dto.isPublic !== undefined) doc.isPublic = dto.isPublic;
-    if (dto.updateBy !== undefined) doc.updateBy = dto.updateBy;
-    else if (actor?.userId) doc.updateBy = actor.userId;
+    doc.updateBy = actor.userId;
 
     const saved = await this.em.save(doc);
     const finalContent = newContent ?? (await this.loadContent(doc.contentId));
 
     // 已发布文档改内容/下架时，同步 RAG/Search/KG（需审核模式下已发布改稿不立即重建索引）
-    await this.syncPipelineAfterUpdate(
-      saved,
-      oldStatus,
-      saved.status,
-      contentChanged,
-      finalContent,
-    );
+    await this.syncPipelineAfterUpdate(saved, oldStatus, saved.status, contentChanged);
 
     return { ...saved, content: finalContent };
   }
@@ -302,8 +311,9 @@ export class DocumentService {
    * 发布文档
    * - 需审核：Draft / Published → PendingReview（不索引）
    * - 免审：Draft / Published / Archived → Published + 索引
+   * - 需审模式下真正建索引发生在审核通过（DocumentReviewService.approveReview）
    */
-  async publish(id: string) {
+  async publish(id: string, actor: AuthUser) {
     this.logger.log(`发布文档：documentId=${id}`);
 
     const doc = await this.em.findOne(DocumentEntity, {
@@ -324,20 +334,20 @@ export class DocumentService {
     if (this.reviewService.isRequireApproval()) {
       // 草稿或已发布：进入待审，不建索引；来自 Published 时 submitForReview 内会清旧索引
       if (doc.status === DocumentStatus.Draft || doc.status === DocumentStatus.Published) {
-        const saved = await this.reviewService.submitForReview(id);
+        const saved = await this.reviewService.submitForReview(id, actor);
         const content = await this.loadContent(saved.contentId);
         return { ...saved, content };
       }
     }
 
-    return this.directPublish(id);
+    return this.directPublish(id, actor);
   }
 
   /**
-   * 免审直接发布
-   * 也供 DocumentReviewService.approveReview 间接使用（审核通过后 status→Published）
+   * 直接发布：状态置 Published、写 publishTime，再投递 RAG / Search / KG 索引
+   * 仅由 publish() 在免审模式调用；需审模式由 DocumentReviewService.approveReview 自行置发布
    */
-  async directPublish(id: string) {
+  async directPublish(id: string, actor: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -357,15 +367,16 @@ export class DocumentService {
 
     doc.status = DocumentStatus.Published;
     doc.publishTime = new Date();
+    if (actor?.userId) doc.updateBy = actor.userId;
     const saved = await this.em.save(doc);
     const content = await this.loadContent(saved.contentId);
-    await this.safePublish(saved, content);
+    await this.safePublish(saved);
     this.logger.log(`文档发布成功：documentId=${id}`);
     return { ...saved, content };
   }
 
   /** 归档：Published → Archived，清索引 */
-  async archive(id: string) {
+  async archive(id: string, actor: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -377,6 +388,7 @@ export class DocumentService {
     }
 
     doc.status = DocumentStatus.Archived;
+    doc.updateBy = actor.userId;
     const saved = await this.em.save(doc);
     await this.safeUnpublish(id);
 
@@ -385,9 +397,9 @@ export class DocumentService {
   }
 
   /** 投递 MQ：RAG 分块向量 + 全文搜索 + KG 建图（失败不回滚文档状态） */
-  private async safePublish(doc: DocumentEntity, content: string) {
+  private async safePublish(doc: DocumentEntity) {
     try {
-      await this.pipelinePublisher.afterPublish(doc, content);
+      await this.pipelinePublisher.afterPublish(doc);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`索引投递失败（不影响文档状态）：documentId=${doc.id}, ${message}`);
@@ -395,7 +407,7 @@ export class DocumentService {
   }
 
   /** 已发布 → 草稿（保存草稿），清索引 */
-  async saveAsDraft(id: string) {
+  async saveAsDraft(id: string, actor: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
     });
@@ -409,6 +421,7 @@ export class DocumentService {
     }
 
     doc.status = DocumentStatus.Draft;
+    doc.updateBy = actor.userId;
     const saved = await this.em.save(doc);
     await this.safeUnpublish(id);
 
@@ -420,8 +433,9 @@ export class DocumentService {
    * 软删除文档
    * Postgres、Mongo 两侧都将 deleted 置为 true（不物理删正文），
    * 已发布文档会异步清理 ES 搜索索引、向量块与 Neo4j 图谱。
+   * 顺序：先投递 unpublish（此时正文仍可读），再软删 PG 与 Mongo；只有 Published 才投递清理。
    */
-  async remove(id: string) {
+  async remove(id: string, actor: AuthUser) {
     const doc = await this.em.findOne(DocumentEntity, { where: { id, deleted: false } });
     if (!doc) {
       throw new NotFoundException(`Document ${id} not found`);
@@ -433,16 +447,21 @@ export class DocumentService {
     }
 
     doc.deleted = true;
+    doc.updateBy = actor.userId;
     await this.em.save(doc);
     await this.contentModel.updateOne({ _id: doc.contentId }, { $set: { deleted: true } });
     return { id, deleted: true };
   }
 
-  /** 上传并解析文件 → 创建草稿文档 */
+  /**
+   * 上传并解析文件 → 创建草稿文档
+   * 流程：解码原始文件名 → 校验扩展名是否受支持 → 解析正文 →（可选）上传原件到 RustFS → create() 建草稿
+   * 坑：解析或原件上传失败都直接抛 400，此时尚未产生文档记录；标题取自文件名。
+   */
   async uploadAndCreateDocument(
     file: Express.Multer.File,
     meta: UploadParseDto = {},
-    actor?: AuthUser,
+    actor: AuthUser,
   ) {
     if (!file?.buffer?.length) {
       throw new BadRequestException('文件不能为空');
@@ -500,10 +519,8 @@ export class DocumentService {
         content: parsedContent,
         categoryId: meta.categoryId,
         teamId: meta.teamId,
-        authorId: meta.authorId,
         tags: meta.tags,
         remark: meta.remark,
-        createBy: meta.createBy,
         isPublic: meta.isPublic,
         status: DocumentStatus.Draft,
       },
@@ -539,7 +556,6 @@ export class DocumentService {
     oldStatus: DocumentStatus,
     newStatus: DocumentStatus,
     contentChanged: boolean,
-    content: string,
   ) {
     const wasPublished = oldStatus === DocumentStatus.Published;
     const isPublished = newStatus === DocumentStatus.Published;
@@ -551,7 +567,7 @@ export class DocumentService {
 
     if (isPublished && contentChanged) {
       if (!this.reviewService.isRequireApproval()) {
-        await this.safePublish(doc, content);
+        await this.safePublish(doc);
       }
     }
   }

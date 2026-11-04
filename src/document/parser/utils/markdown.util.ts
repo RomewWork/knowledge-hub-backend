@@ -1,3 +1,9 @@
+/**
+ * Markdown 处理工具：清洗、表格生成、文件名处理。
+ *
+ * 所有函数都是纯函数，被各 parser 和 document 模块复用；表格输出固定以首行为表头。
+ */
+
 /** 规范化 Markdown：统一换行，压缩连续空行，去首尾空白 */
 export function cleanMarkdown(text: string): string {
   if (!text) return '';

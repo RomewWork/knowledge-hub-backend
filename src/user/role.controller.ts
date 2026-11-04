@@ -7,6 +7,15 @@ import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
 import { RoleCode } from '../common/constants/roles.js';
 
+/**
+ * 角色接口（/roles）
+ *
+ * - 类级 @Roles(ROLE_ADMIN)：整个控制器只有管理员可访问
+ * - 角色 CRUD 走 RoleService；角色-权限绑定走 PermissionService（权限数据在权限侧）
+ * - 列表 / 创建只回传 id、roleName、roleCode、description；详情与更新额外带 status
+ *
+ * 注意：/roles/list 必须注册在 /roles/:id 之前，否则 "list" 会被当作角色 ID 匹配。
+ */
 @Controller('roles')
 @Roles(RoleCode.ADMIN)
 export class RoleController {
@@ -15,6 +24,7 @@ export class RoleController {
     private readonly permissionService: PermissionService,
   ) {}
 
+  /** 全部启用角色（下拉用） */
   @Get('list')
   async listRoles() {
     const roles = await this.roleService.listAll();
@@ -26,6 +36,7 @@ export class RoleController {
     }));
   }
 
+  /** 角色详情 */
   @Get(':id')
   async getRole(@Param('id') id: string) {
     const role = await this.roleService.getById(id);
@@ -38,6 +49,7 @@ export class RoleController {
     };
   }
 
+  /** 新建角色 */
   @Post()
   async createRole(@Body() dto: CreateRoleDto) {
     const role = await this.roleService.create(dto);
@@ -49,6 +61,7 @@ export class RoleController {
     };
   }
 
+  /** 更新角色（名称 / 描述 / 状态） */
   @Put(':id')
   async updateRole(@Param('id') id: string, @Body() dto: UpdateRoleDto) {
     const role = await this.roleService.update(id, dto);
@@ -61,12 +74,14 @@ export class RoleController {
     };
   }
 
+  /** 删除角色（仍有关联用户时 400） */
   @Delete(':id')
   async deleteRole(@Param('id') id: string) {
     await this.roleService.delete(id);
     return { message: '删除成功' };
   }
 
+  /** 查角色已绑定的权限 ID 列表（前端回显勾选状态） */
   @Get(':id/permissions')
   @RequirePermission('system:role')
   async getRolePermissions(@Param('id') id: string) {
@@ -74,6 +89,7 @@ export class RoleController {
     return { roleId: id, permissionIds };
   }
 
+  /** 给角色分配权限：全量替换，传空数组即清空该角色的全部权限 */
   @Put(':id/permissions')
   @RequirePermission('system:role')
   async assignRolePermissions(@Param('id') id: string, @Body() dto: AssignPermissionIdsDto) {

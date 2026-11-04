@@ -2,6 +2,18 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { MailerService } from '@nestjs-modules/mailer';
 
+/**
+ * 事务邮件发送：账户激活链接与密码重置验证码，纯发信、不保存任何状态。
+ *
+ * 依赖 MailerService（@nestjs-modules/mailer，transport/from 在 AppModule 配置）、ConfigService（APP_PUBLIC_URL）。
+ *
+ * 坑与取舍：
+ * - 激活链接是 APP_PUBLIC_URL + /auth/verify-email?token=... 拼出来的；换域名或加反向代理时必须改这个环境变量，
+ *   否则邮件里的链接指向错误主机。
+ * - 正文里写死的「24 小时」「10 分钟」与 ACTIVATION_TOKEN_TTL_SECONDS / RESET_CODE_TTL_SECONDS 各自维护，
+ *   改 TTL 记得同步改文案。
+ * - 发信失败直接向上抛，由调用方（AuthService）回滚 Redis 里的令牌，这里不吞异常。
+ */
 @Injectable()
 export class EmailService {
   constructor(
@@ -9,6 +21,7 @@ export class EmailService {
     private readonly config: ConfigService,
   ) {}
 
+  /** 发送失败会抛异常，调用方需回滚已创建的激活令牌 */
   async sendActivationEmail(email: string, username: string, token: string): Promise<void> {
     const baseUrl = this.config.get<string>('APP_PUBLIC_URL', 'http://localhost:3000');
     const link = `${baseUrl}/auth/verify-email?token=${token}`;

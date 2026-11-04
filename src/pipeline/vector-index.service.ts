@@ -6,7 +6,7 @@ import { DocumentChunk } from './types/pipeline.types.js';
 /** RAG 分块向量索引名 */
 const CHUNK_INDEX = 'kh_chunk';
 /**
- * 向量索引存储
+ * 向量索引存储（RAG 链路落库端）
  *
  * <p>写入 Elasticsearch `kh_chunk`，字段含 dense_vector(embedding)，供后续 kNN / 混合检索。</p>
  *
@@ -14,6 +14,14 @@ const CHUNK_INDEX = 'kh_chunk';
  * - 启动时确保索引 mapping 存在（含 dense_vector）
  * - 按 document_id 删除旧块（重建前先清）
  * - bulk 写入带 embedding 的 chunk
+ *
+ * <p>坑与取舍：</p>
+ * <p>- 写入是「先全量删、再 bulk 写」：_id = chunkId 只能覆盖同一位置的块，
+ * 正文变短、块数变少时没人去覆盖尾部旧块，会留下搜得到但正文已不存在的幽灵块。
+ * 所以重建前必须调 deleteByDocId（编排器 reindexOne 已经这么做），只靠 upsert 不够。</p>
+ * <p>- embedding.dims 取自 EMBEDDING_DIMENSION，与 EmbeddingService 共用同一配置；
+ * 改维度必须删索引重建，否则 bulk 会因维度不符整批失败。</p>
+ * <p>- 索引 settings 是 1 分片 0 副本：单机开发环境的取舍，生产要补副本数。</p>
  */
 @Injectable()
 export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
@@ -27,6 +35,10 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     this.embeddingDims = Number(config.get('EMBEDDING_DIMENSION', 1024));
   }
 
+  /**
+   * 启动时连 ES 并确保 kh_chunk 存在：dims 取自配置，所以索引只能在运行时建；
+   * 连不上就把 es 置 null，后续写入静默跳过，发布主流程不受影响。
+   */
   async onModuleInit() {
     if (!this.esEnabled) {
       this.logger.warn('Elasticsearch 已禁用，RAG 向量索引将跳过写入');
@@ -46,11 +58,17 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  /** 关闭客户端连接，避免热重载时句柄泄漏 */
   async onModuleDestroy() {
     await this.es?.close();
   }
 
-  /** 删除某文档全部向量块（发布重建 / 下架时调用）。 */
+  /**
+   * 删除某文档全部向量块（发布重建 / 下架时调用）。
+   *
+   * refresh: true 让删除立刻对检索可见，重建完成后紧接着的查询不该再命中旧块；
+   * 索引还没建出来时（首次发布、服务刚起）的 index_not_found 直接忽略。
+   */
   async deleteByDocId(documentId: string) {
     if (!this.es) {
       this.logger.warn(`跳过删除向量块（ES 不可用）：documentId=${documentId}`);
@@ -75,7 +93,13 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
-  /** bulk 写入 / 覆盖 chunk（_id = chunkId）。 */
+  /**
+   * bulk 写入 / 覆盖 chunk（_id = chunkId）。
+   *
+   * 一次 bulk 写完再 refresh，比逐条 index 少很多往返；_id 幂等，重复发布是覆盖。
+   * 但覆盖只对「位置相同」的块有效，块数变少时尾部旧块必须靠 deleteByDocId 清掉。
+   * 只要有一条失败就整体抛错：静默的部分成功会让索引半新半旧，比直接失败更难查。
+   */
   async indexChunks(chunks: DocumentChunk[]) {
     if (!chunks.length) return;
 
@@ -178,6 +202,7 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
       publish_time: chunk.publishTime ?? null,
       indexed_at: new Date().toISOString(),
     };
+    // 只有拿到向量才写 embedding 字段：空数组/null 会让 dense_vector 的写入报维度错误
     if (chunk.embedding?.length) {
       doc.embedding = chunk.embedding;
     }

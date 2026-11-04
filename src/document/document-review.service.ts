@@ -11,12 +11,22 @@ import { DocumentEntity } from './entities/document.entity.js';
 import { DocumentReviewEntity, ReviewResult } from './entities/document.review.entity.js';
 import { DocumentContent, DocumentContentDocument } from './schemas/document-content.schema.js';
 import { QueryReviewTasksDto } from './dto/review.dto.js';
+import { AuthUser } from '../auth/auth-user.interface.js';
 
 /**
  * 文档发布审核服务
  *
  * 与 kh_document_review 表对应：每次 submit 插入一条记录，approve/reject 回填结果。
  * 开关：环境变量 DOCUMENT_REQUIRE_APPROVAL（默认 true；false 时 publish 跳过本服务直接发布）。
+ *
+ * 关键依赖：EntityManager（kh_document / kh_document_review）、contentModel、pipelinePublisher、
+ * ConfigService（读审核开关）。
+ *
+ * 坑与取舍：
+ * - 同一文档同时只允许一条待审记录，靠 review_result IS NULL 查询在应用层校验，并发下仍可能重复插入。
+ * - 来自 Published 的提审会先清索引，审核期间文档不可被检索；驳回后回 Draft 也不会自动重建索引。
+ * - 驳回必须填 reviewComment（否则 400），通过不强制填。
+ * - 索引投递失败只告警，不回滚审核结果。
  */
 @Injectable()
 export class DocumentReviewService {
@@ -40,7 +50,7 @@ export class DocumentReviewService {
    * 提交审核：Draft / Published → PendingReview
    * 若来自 Published，先清索引（审核期间不可检索）
    */
-  async submitForReview(documentId: string): Promise<DocumentEntity> {
+  async submitForReview(documentId: string, actor?: AuthUser): Promise<DocumentEntity> {
     const doc = await this.findDocumentOrThrow(documentId);
 
     if (!canSubmitReview(doc.status)) {
@@ -65,6 +75,7 @@ export class DocumentReviewService {
     await this.em.save(review);
 
     doc.status = DocumentStatus.PendingReview;
+    if (actor?.userId) doc.updateBy = actor.userId;
     const saved = await this.em.save(doc);
 
     if (beforeStatus === DocumentStatus.Published) {
@@ -78,7 +89,10 @@ export class DocumentReviewService {
     return saved;
   }
 
-  /** 审核通过 → Published + 重建索引 */
+  /**
+   * 审核通过：回填 review_result，文档置 Published 并写 publishTime，再投递索引重建
+   * 已处理过的任务会被 findPendingReviewOrThrow 拦下，重复调用只会抛 400
+   */
   async approveReview(
     reviewId: string,
     reviewerId?: string,
@@ -98,15 +112,16 @@ export class DocumentReviewService {
     doc.status = DocumentStatus.Published;
     doc.publishTime = new Date();
     const saved = await this.em.save(doc);
-
-    const content = await this.loadContent(doc.contentId);
-    await this.safePublish(saved, content);
+    await this.safePublish(saved);
 
     this.logger.log(`审核通过：reviewId=${reviewId}, documentId=${doc.id}`);
     return saved;
   }
 
-  /** 审核驳回 → Draft */
+  /**
+   * 审核驳回：reviewComment 必填（否则 400），文档回 Draft，作者修改后可再次提审
+   * 驳回不投递索引清理：待审期（来自 Published）提审时已经清过
+   */
   async rejectReview(
     reviewId: string,
     reviewComment: string,
@@ -134,7 +149,7 @@ export class DocumentReviewService {
     return saved;
   }
 
-  /** 待办 / 已通过 / 已驳回 列表 */
+  /** 审核任务分页：默认只查待办（review_result IS NULL），可按 approved / rejected 过滤 */
   async listTasks(query: QueryReviewTasksDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
@@ -160,12 +175,14 @@ export class DocumentReviewService {
     return { items, total, page, pageSize };
   }
 
+  /** 待审核任务数：review_result IS NULL 的总条数，供导航角标轮询 */
   getPendingCount(): Promise<number> {
     return this.em.count(DocumentReviewEntity, {
       where: { reviewResult: IsNull() },
     });
   }
 
+  /** 取待审记录；不存在抛 404，已处理（review_result 非空）抛 400，防重复审核 */
   private async findPendingReviewOrThrow(reviewId: string) {
     const review = await this.em.findOne(DocumentReviewEntity, {
       where: { id: reviewId },
@@ -179,6 +196,7 @@ export class DocumentReviewService {
     return review;
   }
 
+  /** 取未软删文档，不存在抛 404（审核时文档可能已被删除） */
   private async findDocumentOrThrow(id: string) {
     const doc = await this.em.findOne(DocumentEntity, {
       where: { id, deleted: false },
@@ -189,20 +207,17 @@ export class DocumentReviewService {
     return doc;
   }
 
-  private async loadContent(contentId: string): Promise<string> {
-    const contentDoc = await this.contentModel.findOne({ _id: contentId, deleted: false }).lean();
-    return contentDoc?.content ?? '';
-  }
-
-  private async safePublish(doc: DocumentEntity, content: string) {
+  /** 审核通过后投递索引重建；MQ 失败只告警，不影响审核结果 */
+  private async safePublish(doc: DocumentEntity) {
     try {
-      await this.pipelinePublisher.afterPublish(doc, content);
+      await this.pipelinePublisher.afterPublish(doc);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(`审核通过后索引投递失败：documentId=${doc.id}, ${message}`);
     }
   }
 
+  /** 提审时清理该文档的索引；MQ 失败只告警，状态仍进 PendingReview */
   private async safeUnpublish(documentId: string) {
     try {
       await this.pipelinePublisher.afterUnpublish(documentId);

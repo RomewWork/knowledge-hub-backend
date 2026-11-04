@@ -20,6 +20,17 @@ import { ExtractionResult } from './types/pipeline.types.js';
  * <p>ChatOpenAI.withStructuredOutput，不指定 method：qwen-plus 默认 jsonSchema。</p>
  *
  * <p>环境变量：OPENAI_API_KEY / OPENAI_BASE_URL / MODEL_NAME / KG_MAX_ENTITIES / KG_MAX_RELATIONS / KG_LLM_TIMEOUT_MS</p>
+ *
+ * <p>关键依赖：ChatOpenAI.withStructuredOutput + zod schema（kg-extraction.schema.js）；
+ * 由 schema 在调用结束时就约束输出形状，省掉手写 JSON 解析与修补。</p>
+ *
+ * <p>坑与取舍：</p>
+ * <p>- withStructuredOutput 不指定 method，走 qwen-plus 默认的 jsonSchema；换模型可能不支持，
+ * 届时需要退回 functionCalling。</p>
+ * <p>- 正文截到 4000 字：控 token 成本和超长报错，代价是长块后半段信息不参与抽取。</p>
+ * <p>- 一个 chunk 一次串行调用，建图耗时随块数线性增长；maxRetries=0 让失败尽快抛给上层按块降级。</p>
+ * <p>- 无 Key 时 structuredLlm 为 undefined，extract 才抛错（构造期不抛），这样应用还能起来，
+ * 只是 KG 链路不可用。</p>
  */
 @Injectable()
 export class ExtractionService {
@@ -69,6 +80,9 @@ export class ExtractionService {
 
   /**
    * 对单个 chunk 做抽取。
+   *
+   * 空正文直接返回空结果：既省一次 LLM 调用，也避免空 prompt 诱导模型编造实体。
+   *
    * @param content chunk 正文
    * @param heading 所属章节标题（给 LLM 当上下文）
    * @param documentTitle 文档标题
@@ -112,12 +126,22 @@ export class ExtractionService {
     return this.toExtractionResult(parsed);
   }
 
-  /** 截断数量、规范化类型、丢掉挂空实体的关系 */
+  /**
+   * 截断数量、规范化类型、丢掉挂空实体的关系。
+   *
+   * LLM 输出不能全信，这里做三道防线：
+   * 1) 数量截断：防止模型一次吐上百个实体把图撑爆；
+   * 2) 类型归一：模型爱写中文/自造类型，统一映射回枚举，方便后续按类型筛选；
+   * 3) 关系过滤：source/target 必须落在本次抽到的实体里，否则 Neo4j 那边 MATCH 不到端点。
+   */
   private toExtractionResult(parsed: KgExtractionLlmOutput): ExtractionResult {
+    // 记录本块实际保留的实体名，后面用它判断关系两端是否存在
     const entityNames = new Set<string>();
     const entities: ExtractionResult['entities'] = [];
+    // 先按上限截断再清洗：超出的部分直接丢，不做二次筛选
     for (const e of (parsed.entities ?? []).slice(0, this.maxEntities)) {
       const name = (e.name ?? '').trim();
+      // 名字为空的实体直接丢：MERGE (:KnowledgeEntity {name: ''}) 会造出一个无意义空节点
       if (!name) continue;
       entityNames.add(name);
       entities.push({
@@ -129,6 +153,7 @@ export class ExtractionService {
     }
 
     const relations: ExtractionResult['relations'] = [];
+    // 两端必须都在本次实体集合内：写图时 MATCH 不到端点，这条边会被静默丢弃（不报错）
     for (const r of (parsed.relations ?? []).slice(0, this.maxRelations)) {
       const source = (r.source ?? '').trim();
       const target = (r.target ?? '').trim();
@@ -139,6 +164,7 @@ export class ExtractionService {
         source,
         target,
         relation: normalizeRelationType(r.relation ?? r.type),
+        // 权重缺失时给 0.5 中值，避免 undefined 混进 Cypher 参数
         weight: typeof r.weight === 'number' ? r.weight : 0.5,
       });
     }

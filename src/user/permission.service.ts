@@ -20,6 +20,17 @@ import {
   UpdatePermissionDto,
 } from './dto/permission.dto.js';
 
+/**
+ * 权限服务：权限树（菜单 / 按钮 / 接口）维护，以及角色-权限、用户-权限两种绑定
+ *
+ * - 权限是树结构：parentId = '0' 为根，排序按 sort、再按 createdAt
+ * - 权限实体是软删（deleted 标记）；两张关联表（kh_role_permission / kh_user_permission）是物理删
+ * - assignRolePermissions / assignUserPermissions 都是全量替换：先按归属 delete 再逐条 insert
+ *
+ * 注意：getUserPermissionCodes 是运行时鉴权的唯一数据来源，
+ *      最终权限 = 直授权限 ∪ 角色继承权限 ∪（管理员固定追加 ADMIN_OPERATION_PERMISSIONS），
+ *      每一路都必须过滤 status=1 且 deleted=false，否则停用权限会继续生效。
+ */
 @Injectable()
 export class PermissionService {
   constructor(
@@ -35,6 +46,7 @@ export class PermissionService {
     private readonly roleRepo: Repository<RoleEntity>,
   ) {}
 
+  /** 全部启用且未删除的权限（扁平列表，前端可自行组树） */
   async listAll() {
     return this.permRepo.find({
       where: { deleted: false, status: 1 },
@@ -42,6 +54,7 @@ export class PermissionService {
     });
   }
 
+  /** 按 ID 取权限，不存在或已软删抛 404 */
   async getById(id: string) {
     const perm = await this.permRepo.findOne({
       where: { id, deleted: false },
@@ -51,6 +64,7 @@ export class PermissionService {
     return perm;
   }
 
+  /** 直接子权限（只返回启用的），用于逐级懒加载 */
   async getChildren(parentId: string) {
     return this.permRepo.find({
       where: { parentId, deleted: false, status: 1 },
@@ -58,6 +72,7 @@ export class PermissionService {
     });
   }
 
+  /** 新建权限：permissionCode 未删除范围内唯一，parentId 缺省挂到根 '0' */
   async create(dto: CreatePermissionDto) {
     const exists = await this.permRepo.findOne({
       where: { permissionCode: dto.permissionCode, deleted: false },
@@ -79,6 +94,10 @@ export class PermissionService {
     return this.permRepo.save(perm);
   }
 
+  /**
+   * 更新权限：改编码时重新做唯一性校验；改 parentId 时只拦「父级是自己」，
+   * 不做环路检测 —— 把父级改成自己的子孙后，这条分支会从根节点 '0' 的树上整体消失
+   */
   async update(id: string, dto: UpdatePermissionDto) {
     const perm = await this.getById(id);
     if (dto.permissionCode && dto.permissionCode !== perm.permissionCode) {
@@ -106,6 +125,14 @@ export class PermissionService {
     return this.permRepo.save(perm);
   }
 
+  /**
+   * 删除权限（软删，只置 deleted=true）
+   * 三重保护，任一命中即 400：
+   * 1. 还有未删除的子权限
+   * 2. 仍被角色绑定（kh_role_permission）
+   * 3. 仍被用户直授绑定（kh_user_permission）
+   * 据此不会产生孤儿关联，但删除前要先把绑定解开
+   */
   async delete(id: string) {
     const perm = await this.getById(id);
     const childCount = await this.permRepo.count({
@@ -127,6 +154,7 @@ export class PermissionService {
     await this.permRepo.save(perm);
   }
 
+  /** 权限分页：固定 deleted=false，keyword 模糊匹配名称 / 编码 */
   async page(query: QueryPermissionDto) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
@@ -144,6 +172,10 @@ export class PermissionService {
     return { items, total, page, pageSize };
   }
 
+  /**
+   * 组装权限树：一次性取出全部启用权限，在内存里按 parentId 递归挂 children
+   * 数据量小（权限表通常几十到几百行），不做逐层查库
+   */
   async getTree() {
     const perms = await this.permRepo.find({
       where: { deleted: false, status: 1 },
@@ -160,12 +192,17 @@ export class PermissionService {
     return build('0');
   }
 
+  /** 角色已绑定的权限 ID 列表（角色不存在先 404） */
   async getRolePermissionIds(roleId: string): Promise<string[]> {
     await this.ensureRoleExists(roleId);
     const rows = await this.rolePermRepo.find({ where: { roleId } });
     return rows.map((r) => r.permissionId);
   }
 
+  /**
+   * 给角色分配权限：全量替换（先删该角色全部关联，再逐条插入）
+   * 先校验角色存在与权限 ID 合法，避免删完才报错留下空绑定
+   */
   async assignRolePermissions(roleId: string, dto: AssignPermissionIdsDto) {
     await this.ensureRoleExists(roleId);
     await this.validatePermissionIds(dto.permissionIds);
@@ -182,11 +219,16 @@ export class PermissionService {
     return dto.permissionIds;
   }
 
+  /** 用户被直授的权限 ID 列表（不含角色继承来的） */
   async getUserDirectPermissionIds(userId: string): Promise<string[]> {
     const rows = await this.userPermRepo.find({ where: { userId } });
     return rows.map((r) => r.permissionId);
   }
 
+  /**
+   * 给用户直授权限：全量替换
+   * 只覆盖 kh_user_permission，不触碰角色权限，两者在鉴权时叠加
+   */
   async assignUserPermissions(userId: string, dto: AssignPermissionIdsDto) {
     await this.validatePermissionIds(dto.permissionIds);
     await this.userPermRepo.delete({ userId });
@@ -243,11 +285,18 @@ export class PermissionService {
     return [...set];
   }
 
+  /** 角色是否存在的轻量校验（只看主键，不判断 status） */
   private async ensureRoleExists(roleId: string) {
     const role = await this.roleRepo.findOne({ where: { id: roleId } });
     if (!role) throw new NotFoundException('角色不存在');
   }
 
+  /**
+   * 校验权限 ID 是否全部可用：一条 In(ids) 查出未删除且启用的权限，
+   * 用「查到的数量 === 传入的数量」反推，少一条即 404。
+   * 注意入参不能带重复 ID，否则数量天然对不上会被误判为不存在。
+   * 空数组直接放行（等价于清空绑定）。
+   */
   private async validatePermissionIds(ids: string[]) {
     if (!ids.length) return;
     const found = await this.permRepo.find({

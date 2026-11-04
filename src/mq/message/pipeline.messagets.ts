@@ -14,8 +14,6 @@ export interface SearchIndexMessage {
   taskId: string;
   type: SearchIndexType;
   documentId: string;
-  /** INDEX 时附带的文档快照；DELETE 时可省略 */
-  document?: Record<string, unknown>;
 }
 
 /** KG 建图 / 删图消息 */

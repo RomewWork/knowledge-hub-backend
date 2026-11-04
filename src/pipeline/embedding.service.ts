@@ -10,6 +10,12 @@ import { OpenAIEmbeddings } from '@langchain/openai';
  * <p>相关环境变量：</p>
  * - EMBEDDING_API_KEY / DASHSCOPE_API_KEY / OPENAI_API_KEY
  * - EMBEDDING_BASE_URL、EMBEDDING_MODEL、EMBEDDING_DIMENSION、EMBEDDING_BATCH_SIZE
+ *
+ * <p>坑与取舍：</p>
+ * <p>- 维度会写死进 ES mapping（kh_chunk.embedding.dims），换模型或改 EMBEDDING_DIMENSION
+ * 必须删索引重建，否则 bulk 写入维度不符整批失败。</p>
+ * <p>- 批量大小钳到 10：DashScope text-embedding-v3 单请求上限，超了直接 400 InvalidParameter。</p>
+ * <p>- 没配 Key 时构造函数直接抛错：向量化没有降级方案，宁可启动失败也别让流水线静默空转。</p>
  */
 @Injectable()
 export class EmbeddingService {
@@ -57,13 +63,17 @@ export class EmbeddingService {
     });
   }
 
-  /** 单条嵌入 */
+  /** 单条嵌入：复用批量接口，省一套重复的异常处理 */
   async embed(text: string): Promise<number[]> {
     const [vec] = await this.embedBatch([text]);
     return vec;
   }
 
-  /** 批量嵌入（内部按 EMBEDDING_BATCH_SIZE 切片） */
+  /**
+   * 批量嵌入（内部按 EMBEDDING_BATCH_SIZE 切片）。
+   *
+   * 返回顺序与入参严格一一对应，调用方按下标回填 chunk.embedding 即可，不要自己再排序。
+   */
   async embedBatch(texts: string[]): Promise<number[][]> {
     if (!texts.length) return [];
 

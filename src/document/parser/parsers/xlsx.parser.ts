@@ -12,6 +12,9 @@ import { cleanMarkdown, toMarkdownTable } from '../utils/markdown.util.js';
  *
  * 空 Sheet 仍保留标题与空行，避免丢 sheet 名信息。
  * 调用方（FileParserService）在 exceljs 失败时会降级 officeparser。
+ *
+ * 注意：只取单元格的「值」，不保留样式、合并单元格、图片和公式原文；
+ * 整本工作簿一次性读进内存，超大文件需要注意内存占用。
  */
 export async function parseXlsx(buffer: Buffer): Promise<string> {
   const workbook = new ExcelJS.Workbook();

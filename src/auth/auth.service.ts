@@ -32,6 +32,19 @@ interface TokenPayload {
   type: 'access' | 'refresh';
 }
 
+/**
+ * 认证核心服务：签发/刷新 access 与 refresh 双 token，并承载注册、邮箱激活、密码重置流程。
+ *
+ * 依赖 UserService（校验密码、回查角色与权限）、JwtService、ConfigService（时长与环境开关）、
+ * EmailService、EmailActivationService、PasswordResetService（Redis 中的一次性令牌/验证码）。
+ *
+ * 坑与取舍：
+ * - access 默认 2h、refresh 默认 7d（可用 JWT_ACCESS_EXPIRES / JWT_REFRESH_EXPIRES 覆盖）；
+ *   payload 只有 { sub, username, type }，刻意不含 roles/permissions，权限由 JwtStrategy 每请求回查数据库。
+ * - refresh token 只能换新 token，不能拿去调业务接口：JwtStrategy.validate 只接受 type === 'access'。
+ * - register 先落库再发激活邮件；发信失败只回滚 Redis 令牌，用户记录已存在（用户名/邮箱被占用），
+ *   重新注册会 409，只能由管理员或后续重发流程补救。
+ */
 @Injectable()
 export class AuthService {
   constructor(
@@ -73,6 +86,7 @@ export class AuthService {
     });
   }
 
+  /** 校验用户名密码，顺带更新 lastLoginAt，返回双 token 与用户信息 */
   async login(dto: LoginDto): Promise<LoginResult> {
     const user = await this.userService.validateCredentials(dto.username, dto.password);
     await this.userService.touchLastLogin(user.userId);
@@ -108,6 +122,7 @@ export class AuthService {
     };
   }
 
+  /** 激活链接一次性消费；已消费或过期都回落成同一条「无效」提示 */
   async verifyEmail(token: string): Promise<{ message: string }> {
     const userId = await this.emailActivation.consumeToken(token);
     if (!userId) {
@@ -117,6 +132,7 @@ export class AuthService {
     return { message };
   }
 
+  /** 生成 6 位随机码写入 Redis 并发信；60s 内的重复请求被剩余 TTL 拦下 */
   async sendResetCode(dto: SendResetCodeDto): Promise<{ message: string }> {
     const user = await this.userService.findByEmail(dto.email);
     if (!user) {
@@ -140,6 +156,7 @@ export class AuthService {
     return { message: '验证码已发送' };
   }
 
+  /** 校验通过后改密并显式删码（verify 本身不删，失败可重试） */
   async resetPasswordByEmail(dto: ResetPasswordByEmailDto): Promise<{ message: string }> {
     if (!(await this.passwordReset.verify(dto.email, dto.code))) {
       throw new BadRequestException('验证码错误或已过期');
@@ -149,6 +166,7 @@ export class AuthService {
     return { message: '密码重置成功，请登录' };
   }
 
+  /** 只认 type === 'refresh'；用户信息重新回查数据库，因此角色变更随刷新即时生效 */
   async refresh(refreshToken: string): Promise<LoginResult> {
     let payload: TokenPayload;
     try {
@@ -187,6 +205,7 @@ export class AuthService {
     return this.config.get<string>('REQUIRE_EMAIL_VERIFICATION', 'false') === 'true';
   }
 
+  /** 审核员 ID 列表，供审核通知、任务分配等只认角色码的场景使用 */
   async getReviewerIds(): Promise<string[]> {
     return this.userService.getUserIdsByRoleCode('ROLE_REVIEWER');
   }

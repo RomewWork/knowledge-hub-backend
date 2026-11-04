@@ -15,6 +15,17 @@ import { MailerModule } from '@nestjs-modules/mailer';
 import { PasswordResetService } from './password-reset.service.js';
 import { UserModule } from '../user/user.module.js';
 
+/**
+ * 认证模块装配：注册 JWT / Passport / Mailer，并把三个守卫挂成全局 APP_GUARD。
+ *
+ * 依赖 ConfigService（JWT_SECRET 读取）、UserModule（用户与角色查询）、MailerModule（transport 在 AppModule 配置）。
+ *
+ * 坑与取舍：
+ * - 三个守卫按 providers 声明顺序执行：JwtAuthGuard → RolesGuard → PermissionsGuard；
+ *   顺序调乱后两个就读不到 request.user，标了 @Roles / @RequirePermission 的接口会 403。
+ * - JwtModule 只配了 secret，没有 signOptions.expiresIn；过期时间由 AuthService 每次签名时传入，改默认值要去 auth.service。
+ * - 守卫是全局的，业务模块不要重复 @UseGuards；放行靠 @Public()。
+ */
 @Module({
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
