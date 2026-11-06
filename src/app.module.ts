@@ -24,6 +24,7 @@ import { TeamMemberEntity } from './team/entities/team-member.entity.js';
 import { AuthModule } from './auth/auth.module.js';
 import { SearchModule } from './search/search.module.js';
 import { GraphModule } from './graph/graph.module.js';
+import { AiModule } from './ai/ai.module.js';
 
 /**
  * 根模块：集中装配配置、PostgreSQL / MongoDB、邮件、Redis 以及各业务模块。
@@ -103,6 +104,7 @@ import { GraphModule } from './graph/graph.module.js';
     TeamModule,
     SearchModule,
     GraphModule,
+    AiModule,
   ],
   controllers: [AppController],
   providers: [AppService],

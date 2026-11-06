@@ -13,6 +13,10 @@ import { AppModule } from './app.module.js';
  */
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  app.enableCors({
+    origin: true,
+    credentials: true,
+  });
   app.useGlobalPipes(
     // whitelist 丢弃 DTO 未声明的字段；forbidNonWhitelisted 让多余字段直接 400；
     // transform 负责把 query/path 的字符串按 DTO 类型转换（如 number）。

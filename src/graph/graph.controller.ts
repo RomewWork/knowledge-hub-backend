@@ -1,6 +1,7 @@
 import { Controller, Get, Query } from '@nestjs/common';
 import { GraphBuildService } from '../pipeline/graph-build.service.js';
-import { GraphQueryDto, GraphSearchDto } from './dto/graph-query.dto.js';
+import { GraphQueryDto, GraphSearchDto, GraphOverviewDto } from './dto/graph-query.dto.js';
+import { PermissionCode } from '../common/constants/permissions.js';
 
 /**
  * 图谱查询入口（只读）
@@ -17,6 +18,18 @@ import { GraphQueryDto, GraphSearchDto } from './dto/graph-query.dto.js';
 @Controller('graph')
 export class GraphController {
   constructor(private readonly graph: GraphBuildService) {}
+
+  /** 全景：文档 / 实体 / 标签 + 统计，供前端力导向图 */
+  @Get('overview')
+  overview(@Query() query: GraphOverviewDto) {
+    return this.graph.getOverview({
+      keyword: query.keyword,
+      entityType: query.entityType,
+      from: query.from,
+      to: query.to,
+      docLimit: query.docLimit,
+    });
+  }
 
   /**
    * 按关键词搜节点（文档 / 块 / 实体混排）。

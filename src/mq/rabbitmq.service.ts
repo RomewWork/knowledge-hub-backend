@@ -210,21 +210,50 @@ export class RabbitMqService implements OnModuleInit, OnModuleDestroy {
   /**
    * 把已注册的 handler 挂到队列上。
    *
-   * 消费异常只 nack 且 requeue=false：历史遗留实现，好处是不会毒消息无限循环，
-   * 代价是失败消息直接丢弃、没有死信队列兜底，排查只能依赖上方的 error 日志。
+   * 确认策略（手动 ack）：
+   * - 处理成功 → `ack`。不 ack 的话消息会一直是 unacked，进程重启 / 连接断开后
+   *   broker 会把它们重新入队，表现为「重启一次就把 RAG/Search/KG 全重跑一遍」。
+   * - 处理失败 → `nack(requeue=false)`，直接丢弃，避免毒消息无限重投。
+   *   代价是没有死信队列兜底，排查依赖上方的 error 日志（后续可配 DLQ）。
+   *
+   * prefetch：限制单个消费者同时在途的消息数，避免一次把大量消息拉进内存，
+   * 也避免「长时间不 ack 导致堆积」。可用 RABBITMQ_PREFETCH 调整，默认 2。
    */
   private async bindConsumers(ch: ConfirmChannel) {
+    const rawPrefetch = Number(this.config.get<string>('RABBITMQ_PREFETCH', '2'));
+    const prefetch = Number.isFinite(rawPrefetch) && rawPrefetch > 0 ? rawPrefetch : 2;
+    await ch.prefetch(prefetch);
+
     for (const [queue, handler] of this.handlers.entries()) {
-      await ch.consume(queue, async (msg) => {
-        if (!msg) return;
-        try {
-          await handler(msg);
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          this.logger.error(`消费失败 queue=${queue}: ${message}`);
-          ch.nack(msg, false, false);
-        }
-      });
+      await ch.consume(
+        queue,
+        async (msg) => {
+          if (!msg) return;
+
+          let ok = true;
+          try {
+            await handler(msg);
+          } catch (error) {
+            ok = false;
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.error(`消费失败 queue=${queue}: ${message}`);
+          }
+
+          // ack / nack 本身也可能因为 channel 已关闭而抛错（此时消息会被 broker 重投），
+          // 单独捕获，避免把「确认失败」误判成「业务失败」。
+          try {
+            if (ok) {
+              ch.ack(msg);
+            } else {
+              ch.nack(msg, false, false);
+            }
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            this.logger.warn(`消息确认失败 queue=${queue}: ${message}（将被 broker 重投）`);
+          }
+        },
+        { noAck: false },
+      );
       this.logger.log(`已注册消费者：${queue}`);
     }
   }
