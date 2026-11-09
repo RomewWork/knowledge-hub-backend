@@ -25,6 +25,8 @@ import { AuthModule } from './auth/auth.module.js';
 import { SearchModule } from './search/search.module.js';
 import { GraphModule } from './graph/graph.module.js';
 import { AiModule } from './ai/ai.module.js';
+import { AiSessionEntity } from './ai/entities/ai-session.entity.js';
+import { AiMessageEntity } from './ai/entities/ai-message.entity.js';
 
 /**
  * 根模块：集中装配配置、PostgreSQL / MongoDB、邮件、Redis 以及各业务模块。
@@ -62,6 +64,8 @@ import { AiModule } from './ai/ai.module.js';
           UserPermissionEntity,
           TeamEntity,
           TeamMemberEntity,
+          AiSessionEntity,
+          AiMessageEntity,
         ],
         // 生产必须 false：禁止启动时自动同步表结构，避免误改甚至丢数据
         synchronize: false,
