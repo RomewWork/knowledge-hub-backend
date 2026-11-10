@@ -22,6 +22,7 @@
     "test:e2e": "vitest run --config ./vitest.config.e2e.ts"
   },
   "dependencies": {
+    "@ai-sdk/langchain": "^3.0.166",
     "@aws-sdk/client-s3": "^3.1156.0",
     "@elastic/elasticsearch": "^8.17.0",
     "@langchain/core": "^1.3.0",
@@ -37,6 +38,7 @@
     "@nestjs/passport": "^12.0.0",
     "@nestjs/platform-express": "^12.0.1",
     "@nestjs/typeorm": "^12.0.2",
+    "ai": "^7.0.166",
     "amqp-connection-manager": "^5.0.1",
     "amqplib": "^2.2.0",
     "bcryptjs": "^3.0.3",
@@ -45,6 +47,7 @@
     "exceljs": "^4.4.0",
     "ioredis": "^6.0.0",
     "jszip": "^3.10.2",
+    "langchain": "^1.6.3",
     "mammoth": "^1.13.0",
     "mongoose": "^9.11.3",
     "multer": "^2.4.0",

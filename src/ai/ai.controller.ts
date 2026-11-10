@@ -1,15 +1,17 @@
 import { AiChatService } from './ai-chat.service.js';
-import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, Patch, Post, Query, Res } from '@nestjs/common';
 import { HybridRetrievalService } from './hybrid-retrieval.service.js';
 import { ChatSessionService } from './chat-session.service.js';
+import { AiStreamService } from './ai-stream.service.js';
 import { ChatDto } from './dto/chat.dto.js';
+import { ChatStreamDto } from './dto/chat-stream.dto.js';
 import { RagSearchDto } from './dto/rag-search.dto.js';
 import { CreateSessionDto, QuerySessionDto, UpdateSessionDto } from './dto/session.dto.js';
-
 import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorators.js';
 import { PermissionCode } from '../common/constants/permissions.js';
 import type { AuthUser } from '../auth/auth-user.interface.js';
+import type { Response } from 'express';
 
 /**
  * RAG 对外入口（两个接口，职责必须分开）
@@ -27,6 +29,7 @@ import type { AuthUser } from '../auth/auth-user.interface.js';
 export class AiController {
   constructor(
     private readonly aiChat: AiChatService,
+    private readonly aiStream: AiStreamService,
     private readonly retrieval: HybridRetrievalService,
     private readonly sessions: ChatSessionService,
   ) {}
@@ -46,6 +49,13 @@ export class AiController {
   @RequirePermission(PermissionCode.search)
   chat(@Body() dto: ChatDto, @CurrentUser() user: AuthUser) {
     return this.aiChat.chat(dto.content, dto.topK ?? 5, user, dto.sessionId);
+  }
+
+  /** LangChain Agent 流式作答，经 @ai-sdk/langchain 转成 UI Message Stream */
+  @Post('ai/chat/stream')
+  @RequirePermission(PermissionCode.search)
+  streamChat(@Body() dto: ChatStreamDto, @CurrentUser() user: AuthUser, @Res() res: Response) {
+    return this.aiStream.streamChat(dto, user, res);
   }
 
   @Get('ai/sessions')

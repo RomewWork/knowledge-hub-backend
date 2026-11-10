@@ -1,10 +1,12 @@
 import { Module } from '@nestjs/common';
 import { PipelineModule } from '../pipeline/pipeline.module.js';
 import { AiChatService } from './ai-chat.service.js';
+import { AiStreamService } from './ai-stream.service.js';
 import { AiController } from './ai.controller.js';
 import { ChatSessionService } from './chat-session.service.js';
 import { HybridRetrievalService } from './hybrid-retrieval.service.js';
 import { RerankerService } from './reranker.service.js';
+import { WebSearchService } from './web-search.service.js';
 
 /**
  * RAG 模块
@@ -19,6 +21,13 @@ import { RerankerService } from './reranker.service.js';
 @Module({
   imports: [PipelineModule],
   controllers: [AiController],
-  providers: [AiChatService, ChatSessionService, HybridRetrievalService, RerankerService],
+  providers: [
+    AiChatService,
+    AiStreamService,
+    ChatSessionService,
+    HybridRetrievalService,
+    RerankerService,
+    WebSearchService,
+  ],
 })
 export class AiModule {}
