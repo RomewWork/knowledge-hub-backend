@@ -19,8 +19,10 @@ import {
   titleFromFilename,
 } from './parser/utils/markdown.util.js';
 import { DocumentPipelinePublisher } from '../mq/document-pipeline.publisher.js';
+import { PipelineOrchestrator } from '../pipeline/pipeline.orchestrator.js';
 import { DocumentReviewService } from './document-review.service.js';
 import { AuthUser } from '../auth/auth-user.interface.js';
+import { accessFromUser, canReadDocument, canWriteDocument } from './document-access.js';
 
 /**
  * 文档服务
@@ -56,6 +58,8 @@ export class DocumentService {
     private readonly pipelinePublisher: DocumentPipelinePublisher,
     /** 发布审核：是否需审、提交/通过/驳回 */
     private readonly reviewService: DocumentReviewService,
+    /** 索引编排：可见性变更时刷新 ES / Neo4j 上的可见性字段（不重算向量） */
+    private readonly pipeline: PipelineOrchestrator,
   ) {}
 
   /**
@@ -129,15 +133,35 @@ export class DocumentService {
   /**
    * 分页查询文档列表（只返回 Postgres 元数据，不含正文）
    * 支持按标题模糊、分类 / 团队 / 作者 / 状态筛选
+   * 普通用户只能看到：自己写的 ∪ 已发布且公开 ∪ 已发布且所在团队
    */
-  async findAll(query: QueryDocumentDto) {
+  async findAll(query: QueryDocumentDto, user: AuthUser) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 20;
+    const scope = accessFromUser(user);
 
     // 默认排除已软删记录
     const qb = this.em
       .createQueryBuilder(DocumentEntity, 'doc')
       .where('doc.deleted = :deleted', { deleted: false });
+
+    if (!scope.unrestricted) {
+      if (scope.teamIds.length) {
+        qb.andWhere(
+          `(doc.author_id = :me OR (doc.status = :published AND (doc.is_public = true OR doc.team_id IN (:...teamIds))))`,
+          {
+            me: scope.userId,
+            published: DocumentStatus.Published,
+            teamIds: scope.teamIds,
+          },
+        );
+      } else {
+        qb.andWhere(`(doc.author_id = :me OR (doc.status = :published AND doc.is_public = true))`, {
+          me: scope.userId,
+          published: DocumentStatus.Published,
+        });
+      }
+    }
 
     // 标题模糊匹配（不区分大小写）
     if (query.title) {
@@ -220,6 +244,9 @@ export class DocumentService {
     }
 
     const oldStatus = doc.status;
+    // 可见性变更要单独同步索引：正文没变时不会触发重建
+    const oldIsPublic = doc.isPublic;
+    const oldTeamId = doc.teamId;
 
     // —— 状态与编辑权限（待审核中不可改正文）——
     if (doc.status === DocumentStatus.PendingReview) {
@@ -300,9 +327,17 @@ export class DocumentService {
 
     const saved = await this.em.save(doc);
     const finalContent = newContent ?? (await this.loadContent(doc.contentId));
+    const visibilityChanged =
+      saved.isPublic !== oldIsPublic || saved.teamId !== oldTeamId;
 
     // 已发布文档改内容/下架时，同步 RAG/Search/KG（需审核模式下已发布改稿不立即重建索引）
-    await this.syncPipelineAfterUpdate(saved, oldStatus, saved.status, contentChanged);
+    await this.syncPipelineAfterUpdate(
+      saved,
+      oldStatus,
+      saved.status,
+      contentChanged,
+      visibilityChanged,
+    );
 
     return { ...saved, content: finalContent };
   }
@@ -550,12 +585,14 @@ export class DocumentService {
    * 更新后根据状态变化同步索引
    * - Published → 非 Published：清索引
    * - 仍为 Published 且正文变了：免审模式下重建索引；需审核模式下等再次发布/审核通过
+   * - 仍为 Published 且只改公开/团队：立刻刷三套索引的可见性字段（含需审核模式）
    */
   private async syncPipelineAfterUpdate(
     doc: DocumentEntity,
     oldStatus: DocumentStatus,
     newStatus: DocumentStatus,
     contentChanged: boolean,
+    visibilityChanged: boolean,
   ) {
     const wasPublished = oldStatus === DocumentStatus.Published;
     const isPublished = newStatus === DocumentStatus.Published;
@@ -565,9 +602,21 @@ export class DocumentService {
       return;
     }
 
-    if (isPublished && contentChanged) {
-      if (!this.reviewService.isRequireApproval()) {
-        await this.safePublish(doc);
+    if (isPublished && contentChanged && !this.reviewService.isRequireApproval()) {
+      await this.safePublish(doc);
+      return;
+    }
+
+    // 正文没变、只改可见性：不重建索引，只刷 isPublic/teamId/authorId 字段。
+    // 失败只 warn —— 文档本身已经保存成功，索引稍后可由重建修复。
+    if (isPublished && visibilityChanged) {
+      try {
+        await this.pipeline.updateVisibility(doc);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `可见性同步失败（不影响文档保存）：documentId=${doc.id}, ${message}`,
+        );
       }
     }
   }

@@ -3,6 +3,9 @@ import { SearchIndexService } from '../pipeline/search-index.service.js';
 import { SearchDocumentsDto } from './dto/search.dto.js';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
 import { PermissionCode } from '../common/constants/permissions.js';
+import type { AuthUser } from '../auth/auth-user.interface.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorators.js';
+import { accessFromUser } from '../document/document-access.js';
 
 /**
  * 全文检索入口（只读）
@@ -30,13 +33,14 @@ export class SearchController {
    */
   @Post()
   @RequirePermission(PermissionCode.search)
-  search(@Body() dto: SearchDocumentsDto) {
+  search(@Body() dto: SearchDocumentsDto, @CurrentUser() user: AuthUser) {
     return this.searchIndex.searchDocuments({
       keyword: dto.keyword,
       page: dto.page,
       pageSize: dto.pageSize,
       categoryId: dto.categoryId,
       authorId: dto.authorId,
+      scope: accessFromUser(user),
     });
   }
 }

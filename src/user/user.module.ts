@@ -13,6 +13,7 @@ import { DocumentEntity } from '../document/entities/document.entity.js';
 import { PermissionEntity } from './entities/permission.entity.js';
 import { RolePermissionEntity } from './entities/role-permission.entity.js';
 import { UserPermissionEntity } from './entities/user-permission.entity.js';
+import { TeamModule } from '../team/team.module.js';
 
 /**
  * 用户模块：用户 / 角色 / 权限三块业务的实体注册、控制器与服务
@@ -33,6 +34,7 @@ import { UserPermissionEntity } from './entities/user-permission.entity.js';
       RolePermissionEntity,
       UserPermissionEntity,
     ]),
+    TeamModule,
   ],
   controllers: [UserController, RoleController, PermissionController],
   providers: [UserService, RoleService, PermissionService],

@@ -72,7 +72,7 @@ export class AiChatService {
       return { sessionId: sessionId ?? null, answer: '请输入问题。', sources: [] as ChatSource[] };
     }
 
-    const hits = await this.retrieval.retrieve(trimmed, topK);
+    const hits = await this.retrieval.retrieve(trimmed, topK, user);
     if (!hits.length) {
       const empty = {
         answer: '知识库里没有相关内容。',

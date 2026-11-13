@@ -3,6 +3,8 @@ import { TeamService } from './team.service.js';
 import { CreateTeamDto, QueryTeamDto, UpdateTeamDto } from './dto/team.dto.js';
 import { Public } from '../auth/decorators/public.decorator.js';
 import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorators.js';
+import type { AuthUser } from '../auth/auth-user.interface.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
 import { RoleCode } from '../common/constants/roles.js';
 
@@ -25,6 +27,7 @@ export class TeamController {
 
   /** 新建团队 */
   @Post()
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   create(@Body() dto: CreateTeamDto) {
     return this.teamService.create(dto);
@@ -32,12 +35,14 @@ export class TeamController {
 
   /** 更新团队（字段级增量更新） */
   @Put(':id')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   update(@Param('id') id: string, @Body() dto: UpdateTeamDto) {
     return this.teamService.update(id, dto);
   }
   /** 删除团队；有子团队时由 service 抛 400，不在这里做前置判断 */
   @Delete(':id')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   async delete(@Param('id') id: string) {
     await this.teamService.delete(id);
@@ -46,20 +51,29 @@ export class TeamController {
 
   /** 团队分页列表 */
   @Get('page')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   page(@Query() query: QueryTeamDto) {
     return this.teamService.page(query);
   }
 
+  /** 当前用户所在团队（含担任负责人的），登录即可 */
+  @Get('mine')
+  listMine(@CurrentUser() user: AuthUser) {
+    return this.teamService.listMine(user.userId);
+  }
+
   /** 团队树；公开接口，供选择团队的下拉/树控件使用 */
-  @Public()
   @Get('tree')
+  @Roles(RoleCode.ADMIN)
+  @RequirePermission('system:team')
   getTree(@Query('rootOnly') rootOnly?: string) {
     return this.teamService.getTree(rootOnly === 'true');
   }
 
   /** 团队详情（含成员数） */
   @Get(':id')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   getDetail(@Param('id') id: string) {
     return this.teamService.getDetail(id);
@@ -70,6 +84,7 @@ export class TeamController {
    * 请求体直接是 userId 数组，重复添加同一个人不会报错（service 内做幂等）。
    */
   @Post(':id/members')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   addMembers(@Param('id') id: string, @Body() userIds: string[]) {
     return this.teamService.addMembers(id, userIds);
@@ -77,6 +92,7 @@ export class TeamController {
 
   /** 批量移除成员；不在团队里的用户会被静默忽略 */
   @Delete(':id/members')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   removeMembers(@Param('id') id: string, @Body() userIds: string[]) {
     return this.teamService.removeMembers(id, userIds);
@@ -84,6 +100,7 @@ export class TeamController {
 
   /** 成员列表（已 join 用户表并过滤已删除用户） */
   @Get(':id/members')
+  @Roles(RoleCode.ADMIN)
   @RequirePermission('system:team')
   listMembers(@Param('id') id: string) {
     return this.teamService.listMembers(id);

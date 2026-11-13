@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectEntityManager } from '@nestjs/typeorm';
 import { InjectModel } from '@nestjs/mongoose';
@@ -12,6 +18,7 @@ import { DocumentReviewEntity, ReviewResult } from './entities/document.review.e
 import { DocumentContent, DocumentContentDocument } from './schemas/document-content.schema.js';
 import { QueryReviewTasksDto } from './dto/review.dto.js';
 import { AuthUser } from '../auth/auth-user.interface.js';
+import { canWriteDocument } from './document-access.js';
 
 /**
  * 文档发布审核服务
@@ -52,6 +59,9 @@ export class DocumentReviewService {
    */
   async submitForReview(documentId: string, actor?: AuthUser): Promise<DocumentEntity> {
     const doc = await this.findDocumentOrThrow(documentId);
+    if (actor && !canWriteDocument(doc, actor)) {
+      throw new ForbiddenException('无权提交该文档审核');
+    }
 
     if (!canSubmitReview(doc.status)) {
       throw new BadRequestException('只有草稿或已发布状态的文档才能提交审核');

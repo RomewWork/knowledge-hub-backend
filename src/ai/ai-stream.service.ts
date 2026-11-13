@@ -180,7 +180,7 @@ export class AiStreamService {
         let hits: ChunkHit[] = [];
         // 检索失败只降级为空命中：没有资料也能靠模型自身知识或 web_search 回答，不能因此中断整条流
         try {
-          hits = await this.retrieval.retrieve(question, topK);
+          hits = await this.retrieval.retrieve(question, topK, user);
         } catch (error) {
           const detail = error instanceof Error ? error.message : String(error);
           this.logger.warn(`RAG 检索失败：${detail}`);

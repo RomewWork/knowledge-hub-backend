@@ -4,6 +4,8 @@ import { EmbeddingService } from '../pipeline/embedding.service.js';
 import { VectorIndexService } from '../pipeline/vector-index.service.js';
 import { ChunkHit } from '../pipeline/types/pipeline.types.js';
 import { RerankerService } from './reranker.service.js';
+import { accessFromUser } from '../document/document-access.js';
+import type { AuthUser } from '../auth/auth-user.interface.js';
 
 /**
  * kh_chunk 混合检索编排：关键词 + 向量 → RRF 粗融合 → reranker 精排。
@@ -38,13 +40,15 @@ export class HybridRetrievalService {
    * 检索主流程：粗排（RRF）→ 精排（rerank）→ 截取 topK。
    * @param topK 最终返回条数（默认 5），同时作为 rerank 的 top_n
    */
-  async retrieve(query: string, topK = 5): Promise<ChunkHit[]> {
+  async retrieve(query: string, topK = 5, user?: AuthUser): Promise<ChunkHit[]> {
     const queryVector = await this.embedQuery(query);
+    const scope = user ? accessFromUser(user) : { unrestricted: false, userId: '', teamIds: [] };
     const fused = await this.vectorIndex.searchHybrid({
       query,
       queryVector,
       hybridTopK: this.hybridTopK,
       rrfC: this.rrfC,
+      scope,
     });
     if (!fused.length) {
       this.logger.log(`混合检索无结果：queryLength=${query.length}`);

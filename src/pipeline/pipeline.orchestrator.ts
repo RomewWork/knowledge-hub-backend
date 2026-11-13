@@ -85,6 +85,26 @@ export class PipelineOrchestrator {
   }
 
   /**
+   * 已发布文档改公开/所属团队：只同步三套索引上的可见性字段，
+   * 不重跑 embedding / 抽实体。
+   */
+  async updateVisibility(doc: DocumentEntity) {
+    const vis = {
+      isPublic: doc.isPublic ?? false,
+      teamId: doc.teamId ?? null,
+      authorId: doc.authorId ?? null,
+    };
+    this.logger.log(
+      `同步可见性：documentId=${doc.id}, isPublic=${vis.isPublic}, teamId=${vis.teamId ?? '-'}`,
+    );
+    await Promise.all([
+      this.searchIndexService.updateVisibility(doc.id, vis),
+      this.vectorIndexService.updateVisibility(doc.id, vis),
+      this.graphBuildService.updateVisibility(doc.id, vis),
+    ]);
+  }
+
+  /**
    * 处理 Search 索引消息。
    *
    * 消息里现在只带 documentId，不再携带文档快照：INDEX 时按 id 回查 Postgres 元数据 +

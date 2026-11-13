@@ -2,6 +2,9 @@ import { Controller, Get, Query } from '@nestjs/common';
 import { GraphBuildService } from '../pipeline/graph-build.service.js';
 import { GraphQueryDto, GraphSearchDto, GraphOverviewDto } from './dto/graph-query.dto.js';
 import { PermissionCode } from '../common/constants/permissions.js';
+import { CurrentUser } from '../auth/decorators/current-user.decorators.js';
+import type { AuthUser } from '../auth/auth-user.interface.js';
+import { accessFromUser } from '../document/document-access.js';
 
 /**
  * 图谱查询入口（只读）
@@ -21,13 +24,14 @@ export class GraphController {
 
   /** 全景：文档 / 实体 / 标签 + 统计，供前端力导向图 */
   @Get('overview')
-  overview(@Query() query: GraphOverviewDto) {
+  overview(@Query() query: GraphOverviewDto, @CurrentUser() user: AuthUser) {
     return this.graph.getOverview({
       keyword: query.keyword,
       entityType: query.entityType,
       from: query.from,
       to: query.to,
       docLimit: query.docLimit,
+      scope: accessFromUser(user),
     });
   }
 
@@ -38,19 +42,19 @@ export class GraphController {
    * service 里用 coalesce 归一后再比较，返回靠 `label` 区分类型。
    */
   @Get('search')
-  search(@Query() query: GraphSearchDto) {
-    return this.graph.searchGraph(query.keyword, query.limit ?? 50);
+  search(@Query() query: GraphSearchDto, @CurrentUser() user: AuthUser) {
+    return this.graph.searchGraph(query.keyword, query.limit ?? 50, accessFromUser(user));
   }
 
   /** 知识实体节点列表，可选按 `type`（PERSON / CONCEPT / ...）过滤 */
   @Get('nodes')
-  listNodes(@Query() query: GraphQueryDto) {
-    return this.graph.listNodes(query.type, query.limit ?? 200);
+  listNodes(@Query() query: GraphQueryDto, @CurrentUser() user: AuthUser) {
+    return this.graph.listNodes(query.type, query.limit ?? 200, accessFromUser(user));
   }
 
   /** 实体之间的 RELATED_TO 边（source / target / relation / weight） */
   @Get('edges')
-  listEdges(@Query() query: GraphQueryDto) {
-    return this.graph.listEdges(query.limit ?? 500);
+  listEdges(@Query() query: GraphQueryDto, @CurrentUser() user: AuthUser) {
+    return this.graph.listEdges(query.limit ?? 500, accessFromUser(user));
   }
 }

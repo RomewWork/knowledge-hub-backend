@@ -21,6 +21,7 @@ import { UpdateProfileDto } from './dto/profile.dto.js';
 import { UserVO } from './vo/user.vo.js';
 import { DocumentEntity } from '../document/entities/document.entity.js';
 import { PermissionService } from './permission.service.js';
+import { TeamService } from '../team/team.service.js';
 
 /**
  * 用户服务：账号生命周期、登录凭据校验、角色绑定与个人统计
@@ -45,6 +46,7 @@ export class UserService {
     @InjectRepository(DocumentEntity)
     private readonly documentRepo: Repository<DocumentEntity>,
     private readonly permissionService: PermissionService,
+    private readonly teamService: TeamService,
   ) {}
 
   /**
@@ -306,7 +308,8 @@ export class UserService {
   }
 
   /** 组装注入 request.user 的登录态（JWT 载荷视图，不含密码） */
-  toAuthUser(user: UserEntity, roles: string[], permissions: string[]): AuthUser {
+  async toAuthUser(user: UserEntity, roles: string[], permissions: string[]): Promise<AuthUser> {
+    const teamIds = await this.teamService.listAccessibleTeamIds(user.id);
     return {
       userId: user.id,
       username: user.username,
@@ -315,6 +318,7 @@ export class UserService {
       avatar: user.avatar,
       roles,
       permissions,
+      teamIds: teamIds.map(String),
     };
   }
 

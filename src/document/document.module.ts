@@ -5,6 +5,7 @@ import { DocumentContent, DocumentContentSchema } from './schemas/document-conte
 import { MongooseModule } from '@nestjs/mongoose';
 import { FileParserService } from './parser/file-parser.service.js';
 import { DocumentReviewService } from './document-review.service.js';
+import { PipelineModule } from '../pipeline/pipeline.module.js';
 
 /**
  * 文档域模块：装配文档控制器、文档服务、审核服务与正文解析服务。
@@ -20,6 +21,7 @@ import { DocumentReviewService } from './document-review.service.js';
 @Module({
   imports: [
     MongooseModule.forFeature([{ name: DocumentContent.name, schema: DocumentContentSchema }]),
+    PipelineModule,
   ],
   controllers: [DocumentController],
   providers: [DocumentService, FileParserService, DocumentReviewService],
