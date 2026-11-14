@@ -49,6 +49,7 @@
     "jszip": "^3.10.2",
     "langchain": "^1.6.3",
     "mammoth": "^1.13.0",
+    "mem0ai": "^3.3.1",
     "mongoose": "^9.11.3",
     "multer": "^2.4.0",
     "neo4j-driver": "^6.2.0",
