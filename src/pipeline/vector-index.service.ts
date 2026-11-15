@@ -300,9 +300,18 @@ export class VectorIndexService implements OnModuleInit, OnModuleDestroy {
             document_id: { type: 'keyword' },
             document_title: {
               type: 'text',
+              // 索引侧细粒度切、查询侧粗粒度切——与 kh_document 保持一致。
+              // 缺 analyzer 会退回 standard（中文切单字），而查询用 ik_smart 会按词，
+              // 两边词项对不上 → 关键词召回恒为 0，只剩向量一路。
+              analyzer: 'ik_max_word',
+              search_analyzer: 'ik_smart',
               fields: { keyword: { type: 'keyword' } },
             },
-            content: { type: 'text' },
+            content: {
+              type: 'text',
+              analyzer: 'ik_max_word',
+              search_analyzer: 'ik_smart',
+            },
             heading: { type: 'keyword' },
             chunk_index: { type: 'integer' },
             total_chunks: { type: 'integer' },

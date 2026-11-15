@@ -12,7 +12,8 @@ import { dbRowsToMessages } from './chat-memory.util.js';
 import { retrieveUntilRelevant } from './agentic-retrieve.js';
 import { WebSearchService, type WebSearchResult } from './web-search.service.js';
 import { ChatQueryRewriteService, type ChatIntent } from './chat-query-rewrite.service.js';
-
+import { formatGraphSystemText, GraphBuildService } from '../pipeline/graph-build.service.js';
+import { accessFromUser } from '../document/document-access.js';
 import type { ChatSource } from './chat.types.js';
 
 export type { ChatSource } from './chat.types.js';
@@ -54,6 +55,7 @@ export class AiChatService {
     private readonly longMemory: ChatLongMemoryService,
     private readonly queryRewrite: ChatQueryRewriteService,
     private readonly webSearch: WebSearchService,
+    private readonly graph: GraphBuildService,
   ) {
     const apiKey =
       config.get<string>('OPENAI_API_KEY') ||
@@ -108,33 +110,38 @@ export class AiChatService {
     const memHitsP = user
       ? this.longMemory.search(user.userId, sessionId, plan.query)
       : Promise.resolve({ user: [] as string[], session: [] as string[] });
-    // 非流式没有 Agent 工具环，但检索仍走同一套：评估切题，不足则改写再查。
+    // 图谱与知识库同一层：意图确定后再并行检索，不和 classify 抢跑。
+    const access = user ? accessFromUser(user) : undefined;
+    const kbP = plan.allowRetrieve
+      ? retrieveUntilRelevant({
+          question: trimmed,
+          query: plan.query,
+          topK,
+          user,
+          retrieval: this.retrieval,
+          rewrite: this.queryRewrite,
+        })
+      : Promise.resolve(undefined);
+    const graphP =
+      plan.allowGraph && user && access && plan.graphQueries.length
+        ? this.graph.retrieveForChat(plan.graphQueries, 8, access)
+        : Promise.resolve(undefined);
+    const [retrieved, graphHit] = await Promise.all([kbP, graphP]);
     let hits = [] as ChunkHit[];
     let kbInsufficient = false;
     let searchQuery = plan.query || trimmed;
-    if (plan.allowRetrieve) {
-      const retrieved = await retrieveUntilRelevant({
-        question: trimmed,
-        query: plan.query,
-        topK,
-        user,
-        retrieval: this.retrieval,
-        rewrite: this.queryRewrite,
-      });
+    if (retrieved) {
       hits = retrieved.hits;
       kbInsufficient = !retrieved.eval.ok;
       searchQuery = retrieved.usedQuery || searchQuery;
     }
-    // 先库后网：只有允许联网、且（本轮不查库 或 查了但不切题）才搜。
-    // kb 意图 allowWeb 为 false，即使 kbInsufficient 也不会联网，下面的短路分支据此直接给结论
+    const hasGraph = Boolean(graphHit?.entities.length || graphHit?.relations.length);
     const web =
       plan.allowWeb && (!plan.allowRetrieve || kbInsufficient)
         ? await this.webSearch.search(searchQuery)
         : undefined;
     const memHits = await memHitsP;
-    // kb 意图且检索不切题：直接给结论，不联网、不调模型，避免空 context 诱发编造；
-    // 仍照常落库，保持会话连续，下一轮还能接着问
-    if (plan.intent === 'kb' && kbInsufficient) {
+    if (plan.intent === 'kb' && kbInsufficient && !hasGraph) {
       const empty = {
         answer: '知识库里没有相关内容。',
         sources: [] as ChatSource[],
@@ -163,6 +170,7 @@ export class AiChatService {
     }
 
     const memoryMsg = this.longMemory.buildSystemMessage(memHits);
+    const graphMsg = graphHit ? formatGraphSystemText(graphHit) : '';
     const parts: string[] = [];
     if (hits.length) parts.push(`知识库资料：\n${this.buildContext(hits)}`);
     if (web) parts.push(`联网结果：\n${this.buildWebContext(web)}`);
@@ -171,6 +179,7 @@ export class AiChatService {
     const response = await this.llm.invoke([
       new SystemMessage(this.buildSystemPrompt(plan.intent, Boolean(hits.length), web)),
       ...(memoryMsg ? [memoryMsg] : []),
+      ...(graphMsg ? [new SystemMessage(graphMsg)] : []),
       ...history,
       new HumanMessage(userTurn),
     ]);
