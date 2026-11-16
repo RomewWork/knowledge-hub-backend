@@ -1,46 +1,51 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ChatOpenAI } from '@langchain/openai';
-import { HumanMessage, SystemMessage, BaseMessage } from '@langchain/core/messages';
+import { HumanMessage, SystemMessage, type BaseMessage } from '@langchain/core/messages';
 import { HybridRetrievalService } from './hybrid-retrieval.service.js';
 import { ChunkHit } from '../pipeline/types/pipeline.types.js';
 import { ChatSessionService } from './chat-session.service.js';
 import { ChatShortMemoryService } from './chat-short-memory.service.js';
 import { ChatLongMemoryService } from './chat-long-memory.service.js';
-import type { AuthUser } from '../auth/auth-user.interface.js';
-import { dbRowsToMessages } from './chat-memory.util.js';
+import { ChatQueryRewriteService, type ChatIntent } from './chat-query-rewrite.service.js';
 import { retrieveUntilRelevant } from './agentic-retrieve.js';
 import { WebSearchService, type WebSearchResult } from './web-search.service.js';
-import { ChatQueryRewriteService, type ChatIntent } from './chat-query-rewrite.service.js';
-import { formatGraphSystemText, GraphBuildService } from '../pipeline/graph-build.service.js';
+import {
+  formatGraphSystemText,
+  GraphBuildService,
+} from '../pipeline/graph-build.service.js';
 import { accessFromUser } from '../document/document-access.js';
+import { dbRowsToMessages } from './chat-memory.util.js';
+import type { AuthUser } from '../auth/auth-user.interface.js';
 import type { ChatSource } from './chat.types.js';
+import type { ChatEvalHit, ChatEvalSnapshot } from './eval/eval.types.js';
+import { withObservation, withTraceAttrs } from '../observability/langfuse.js';
 
 export type { ChatSource } from './chat.types.js';
 
-const EXCERPT_LEN = 200;
-const CITATION_RE = /\[(\d+)\]/g;
+export type ChatOptions = {
+  /** 默认 true：写入会话与记忆。评测脚本关。 */
+  persist?: boolean;
+  /** 附带评测快照 */
+  includeEval?: boolean;
+};
+
+export type ChatResult = {
+  sessionId: string | null;
+  answer: string;
+  sources: ChatSource[];
+  eval?: ChatEvalSnapshot;
+};
+
+const EXCERPT_LEN = 200; // 引用摘录截断长度（字符）
+const CITATION_RE = /\[(\d+)\]/g; // 回答里的 [1]、[2] 引用编号
 
 /**
- * RAG 对话：混合检索 → 拼 context → LLM 作答 → 解析引用
- *
- * 关键依赖：
- * - HybridRetrievalService 负责混合召回，文档可见范围由 AuthUser 决定。
- * - ChatQueryRewriteService 负责意图路由、切题评估与检索改写，和流式接口共用同一套判定。
- * - agentic-retrieve 的 retrieveUntilRelevant 是无 Agent 时的等价环：查 → 评估 → 不足则改写再查。
- * - ChatSessionService / ChatShortMemoryService / ChatLongMemoryService 负责会话、短期窗口与长期记忆。
- * - WebSearchService 只在前述条件满足时联网，不参与知识库切题判定。
- *
- * 设计要点：
- * - **kb 意图检索不切题时直接短路**，不把空 context 丢给模型（否则必然诱发臆答）；
- * - system prompt 是「引用契约」：只依据资料回答、不足就说不知道、句末标 [n]、编号必须与列表一致；
- * - `sources` 只回填答案里**实际出现**的编号（见 toCitedSources），避免「列了 5 条只用 1 条」的假溯源；
- * - 没配 LLM Key 时构造期不抛错，调用时才抛 503，保证服务能正常启动。
- *
- * 坑：
- * - 非流式没有 Agent 工具环，检索判定必须复用 agentic-retrieve；另写一套会让同一问题在流式与非流式给出不同结论。
- * - web 的调用条件是「先库后网」的代码表达，改成无条件联网，kb 检索不到时就会改用网页作答，而不是说「知识库里没有」。
- * - `sources` 未标注时才回退为全部召回，其余情况只回填被引用的编号；始终全量返回会让前端把「召回 5 条」显示成「引用 5 条」。
+ * 非流式 Agentic RAG：意图路由 → 知识库与图谱并行检索（不足则改写再查）→ 按需联网 → 作答。
  */
 @Injectable()
 export class AiChatService {
@@ -71,7 +76,9 @@ export class AiChatService {
       config.get<string>('LLM_BASE_URL') ||
       'https://dashscope.aliyuncs.com/compatible-mode/v1';
     const model =
-      config.get<string>('MODEL_NAME') || config.get<string>('LLM_MODEL') || 'qwen-plus';
+      config.get<string>('MODEL_NAME') ||
+      config.get<string>('LLM_MODEL') ||
+      'qwen-plus';
 
     this.llm = new ChatOpenAI({
       apiKey,
@@ -84,17 +91,15 @@ export class AiChatService {
     });
   }
 
-  /**
-   * 问答主流程：classify 路由 → retrieveUntilRelevant（查 → 评估 → 不足则改写再查）
-   * → 按「先库后网」决定是否联网 → 拼 prompt 调模型 → 只回填被引用的 sources。
-   *
-   * 和流式接口共用 classify / retrieveAndGrade / rewriteAfterRetrieve 这套判定，
-   * 只是这里没有 Agent 工具环，顺序由代码写死；非流式要尽量和流式给出一致结论。
-   * @param question 用户问题
-   * @param topK 检索条数（同时决定 context 里 [1]..[n] 的编号范围）
-   * @returns { answer, sources }，sources 只含被引用的资料
-   */
-  async chat(question: string, topK = 5, user?: AuthUser, sessionId?: string) {
+  async chat(
+    question: string,
+    topK = 5,
+    user?: AuthUser,
+    sessionId?: string,
+    options?: ChatOptions,
+  ): Promise<ChatResult> {
+    const persist = options?.persist !== false;
+    const includeEval = Boolean(options?.includeEval);
     const trimmed = question.trim();
     if (!trimmed) {
       return {
@@ -104,9 +109,41 @@ export class AiChatService {
       };
     }
 
-    const history = user ? await this.loadWorkingHistory(user.userId, sessionId) : [];
+    return withObservation('ai-chat', (update) =>
+      withTraceAttrs(
+        {
+          userId: user?.userId,
+          sessionId,
+          tags: ['ai-chat', 'agentic-rag'],
+        },
+        () =>
+          this.runChatTurn({
+            trimmed,
+            topK,
+            user,
+            sessionId,
+            persist,
+            includeEval,
+            update,
+          }),
+      ),
+    );
+  }
+
+  private async runChatTurn(opts: {
+    trimmed: string;
+    topK: number;
+    user?: AuthUser;
+    sessionId?: string;
+    persist: boolean;
+    includeEval: boolean;
+    update: (fields: Record<string, unknown>) => void;
+  }): Promise<ChatResult> {
+    const { trimmed, topK, user, sessionId, persist, includeEval, update } = opts;
+    const history = user
+      ? await this.loadWorkingHistory(user.userId, sessionId)
+      : [];
     const plan = await this.queryRewrite.classify(trimmed, history);
-    // 记忆召回先发起、等检索跑完再 await，和检索并行，少一次串行等待
     const memHitsP = user
       ? this.longMemory.search(user.userId, sessionId, plan.query)
       : Promise.resolve({ user: [] as string[], session: [] as string[] });
@@ -135,18 +172,66 @@ export class AiChatService {
       kbInsufficient = !retrieved.eval.ok;
       searchQuery = retrieved.usedQuery || searchQuery;
     }
-    const hasGraph = Boolean(graphHit?.entities.length || graphHit?.relations.length);
+    const hasGraph = Boolean(
+      graphHit?.entities.length || graphHit?.relations.length,
+    );
     const web =
       plan.allowWeb && (!plan.allowRetrieve || kbInsufficient)
         ? await this.webSearch.search(searchQuery)
         : undefined;
     const memHits = await memHitsP;
+
+    const snapshot = (answer: string): ChatEvalSnapshot => ({
+      question: trimmed,
+      answer,
+      intent: plan.intent,
+      allowRetrieve: plan.allowRetrieve,
+      allowGraph: plan.allowGraph,
+      allowWeb: plan.allowWeb,
+      graphQueries: plan.graphQueries,
+      retrieveCount: retrieved?.retrieveCount ?? 0,
+      rewritten: Boolean(retrieved?.eval.retried),
+      retryQuery: retrieved?.eval.retryQuery,
+      retrieveEval: retrieved?.eval,
+      graphUsed: Boolean(graphHit),
+      webUsed: Boolean(web),
+      rawHits: (retrieved?.rawHits ?? []).map(toEvalHit),
+      gradedHits: hits.map(toEvalHit),
+      webSnippet: web
+        ? web.error ||
+          web.items.map((i) => `${i.title}\n${i.url}\n${i.snippet}`).join('\n')
+        : '',
+    });
+
+    const finish = (
+      answer: string,
+      sources: ChatSource[],
+      sid: string | null,
+    ): ChatResult => {
+      const evalSnap = snapshot(answer);
+      update({
+        input: { question: trimmed },
+        output: { answer, intent: plan.intent, eval: retrieved?.eval },
+        metadata: {
+          intent: plan.intent,
+          retrieveCount: evalSnap.retrieveCount,
+          hitTitles: evalSnap.rawHits.map((h) => h.documentTitle),
+        },
+      });
+      return {
+        sessionId: sid,
+        answer,
+        sources,
+        ...(includeEval ? { eval: evalSnap } : {}),
+      };
+    };
+
     if (plan.intent === 'kb' && kbInsufficient && !hasGraph) {
       const empty = {
         answer: '知识库里没有相关内容。',
         sources: [] as ChatSource[],
       };
-      const session = user
+      const session = persist && user
         ? await this.sessions.appendTurn(
             user.userId,
             sessionId,
@@ -155,14 +240,28 @@ export class AiChatService {
             empty.sources,
           )
         : null;
-      if (user && session) {
-        await this.shortMemory.appendTurn(user.userId, session.id, history, trimmed, empty.answer);
-        this.longMemory.rememberTurn(user.userId, session.id, trimmed, empty.answer);
+      if (persist && user && session) {
+        await this.shortMemory.appendTurn(
+          user.userId,
+          session.id,
+          history,
+          trimmed,
+          empty.answer,
+        );
+        this.longMemory.rememberTurn(
+          user.userId,
+          session.id,
+          trimmed,
+          empty.answer,
+        );
       }
-      return { sessionId: session?.id ?? sessionId ?? null, ...empty };
+      return finish(
+        empty.answer,
+        empty.sources,
+        session?.id ?? sessionId ?? null,
+      );
     }
 
-    // 构造期没抛错（保证服务能启动），这里才 503，让调用方明确知道是没配 Key 而不是检索不到
     if (!this.llm) {
       throw new ServiceUnavailableException(
         '未配置 OPENAI_API_KEY / LLM_API_KEY / DASHSCOPE_API_KEY，无法生成回答',
@@ -177,7 +276,9 @@ export class AiChatService {
     parts.push(`用户问题：${trimmed}`);
     const userTurn = parts.join('\n\n');
     const response = await this.llm.invoke([
-      new SystemMessage(this.buildSystemPrompt(plan.intent, Boolean(hits.length), web)),
+      new SystemMessage(
+        this.buildSystemPrompt(plan.intent, Boolean(hits.length), web),
+      ),
       ...(memoryMsg ? [memoryMsg] : []),
       ...(graphMsg ? [new SystemMessage(graphMsg)] : []),
       ...history,
@@ -185,26 +286,44 @@ export class AiChatService {
     ]);
 
     const answer =
-      typeof response.content === 'string' ? response.content : JSON.stringify(response.content);
+      typeof response.content === 'string'
+        ? response.content
+        : JSON.stringify(response.content);
 
     const sources = this.toCitedSources(answer, hits);
     this.logger.log(
       `RAG 对话完成：hits=${hits.length}, cited=${sources.length}, answerLength=${answer.length}`,
     );
 
-    const session = user
-      ? await this.sessions.appendTurn(user.userId, sessionId, trimmed, answer, sources)
+    const session = persist && user
+      ? await this.sessions.appendTurn(
+          user.userId,
+          sessionId,
+          trimmed,
+          answer,
+          sources,
+        )
       : null;
 
-    if (user && session) {
-      await this.shortMemory.appendTurn(user.userId, session.id, history, trimmed, answer);
-      void this.longMemory.rememberTurn(user.userId, session.id, trimmed, answer);
+    if (persist && user && session) {
+      await this.shortMemory.appendTurn(
+        user.userId,
+        session.id,
+        history,
+        trimmed,
+        answer,
+      );
+      void this.longMemory.rememberTurn(
+        user.userId,
+        session.id,
+        trimmed,
+        answer,
+      );
     }
 
-    return { sessionId: session?.id ?? sessionId ?? null, answer, sources };
+    return finish(answer, sources, session?.id ?? sessionId ?? null);
   }
 
-  /** 短期记忆优先；未命中回填数据库最近 N 条并写回缓存，避免每轮都打库 */
   private async loadWorkingHistory(
     userId: string,
     sessionId: string | undefined,
@@ -232,11 +351,12 @@ export class AiChatService {
       if (n >= 1 && n <= hits.length) cited.add(n);
     }
 
-    const indexes = cited.size > 0 ? [...cited].sort((a, b) => a - b) : hits.map((_, i) => i + 1);
+    const indexes =
+      cited.size > 0 ? [...cited].sort((a, b) => a - b) : hits.map((_, i) => i + 1);
+
     return indexes.map((index) => this.toSource(index, hits[index - 1]));
   }
 
-  /** ChunkHit → ChatSource：正文只给 200 字摘录，不回吐整块内容 */
   private toSource(index: number, hit: ChunkHit): ChatSource {
     return {
       index,
@@ -248,28 +368,25 @@ export class AiChatService {
     };
   }
 
-  /** 压平空白并截断到 200 字，超出补省略号 */
   private excerpt(content: string): string {
     const text = content.replace(/\s+/g, ' ').trim();
     if (text.length <= EXCERPT_LEN) return text;
     return `${text.slice(0, EXCERPT_LEN)}...`;
   }
 
-  /**
-   * 把命中块拼成带编号的资料列表：`[n] 标题 / 章节\n正文`，每块正文截 800 字。
-   * 这里的 n 就是模型被要求标注的编号，与 toCitedSources 的解析一一对应。
-   */
   private buildContext(hits: ChunkHit[]): string {
     return hits
       .map((src, i) => {
         const heading = src.heading ? ` / ${src.heading}` : '';
-        const snippet = src.content.length > 800 ? `${src.content.slice(0, 800)}...` : src.content;
+        const snippet =
+          src.content.length > 800
+            ? `${src.content.slice(0, 800)}...`
+            : src.content;
         return `[${i + 1}] ${src.documentTitle}${heading}\n${snippet}`;
       })
       .join('\n\n');
   }
 
-  /** 联网结果转成 context；搜索失败也把原因写进去，模型才能说明未获取到公开信息 */
   private buildWebContext(web: WebSearchResult): string {
     if (web.error) return web.error;
     if (!web.items.length) return '无结果。';
@@ -278,13 +395,11 @@ export class AiChatService {
       .join('\n\n');
   }
 
-  /**
-   * 按意图拼 system prompt，本质是一份「引用契约」：
-   * hasKb 才要求标 [n]（没有资料还要求标号，模型会凭空编号）；
-   * kb 系列无资料时明确禁止编造内部制度；web 结果只允许当公开信息补充。
-   * 编号规则必须和 buildContext 的 [i+1]、toCitedSources 的解析保持一致。
-   */
-  private buildSystemPrompt(intent: ChatIntent, hasKb: boolean, web?: WebSearchResult): string {
+  private buildSystemPrompt(
+    intent: ChatIntent,
+    hasKb: boolean,
+    web?: WebSearchResult,
+  ): string {
     let prompt =
       '你是企业知识库助手。结合对话历史和记忆里的用户背景回答。' +
       '制度/流程以本轮知识库资料为准，不要用记忆替代文档。';
@@ -305,3 +420,15 @@ export class AiChatService {
     return prompt;
   }
 }
+
+function toEvalHit(hit: ChunkHit): ChatEvalHit {
+  const text = hit.content.replace(/\s+/g, ' ').trim();
+  return {
+    documentId: hit.documentId,
+    documentTitle: hit.documentTitle,
+    heading: hit.heading,
+    score: hit.score,
+    excerpt: text.length > 400 ? `${text.slice(0, 400)}...` : text,
+  };
+}
+

@@ -1,6 +1,7 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
+import { startLangfuseTracing, shutdownLangfuseTracing } from './observability/langfuse.js';
 
 /**
  * 应用入口：创建 Nest 实例、装全局校验管道并监听端口。
@@ -12,7 +13,14 @@ import { AppModule } from './app.module.js';
  * - 鉴权由 AuthModule 里的全局 guard 负责，本文件只处理启动与全局管道。
  */
 async function bootstrap() {
+  // 配了 LANGFUSE_PUBLIC_KEY / SECRET_KEY 才真正启动上报；否则是空操作
+  startLangfuseTracing();
   const app = await NestFactory.create(AppModule);
+  // 让 Nest 在 SIGTERM 等信号下走 onModuleDestroy，Langfuse 才能 flush 完
+  app.enableShutdownHooks();
+  process.once('beforeExit', () => {
+    void shutdownLangfuseTracing();
+  });
   app.enableCors({
     origin: true,
     credentials: true,
