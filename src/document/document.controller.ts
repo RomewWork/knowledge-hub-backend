@@ -12,38 +12,29 @@ import {
   UseInterceptors,
   BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { DocumentService } from './document.service.js';
+import { DocumentReviewService } from './document-review.service.js';
 import { CreateDocumentDto } from './dto/create-document.dto.js';
 import { UpdateDocumentDto } from './dto/update-document.dto.js';
 import { QueryDocumentDto } from './dto/query-document.dto.js';
 import { UploadParseDto } from './dto/upload-parse.dto.js';
-import { FileInterceptor } from '@nestjs/platform-express';
 import { QueryReviewTasksDto, ReviewDecisionDto } from './dto/review.dto.js';
 import { CurrentUser } from '../auth/decorators/current-user.decorators.js';
-import { DocumentReviewService } from './document-review.service.js';
 import type { AuthUser } from '../auth/auth-user.interface.js';
 import { Roles } from '../auth/decorators/roles.decorator.js';
+import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
 import { RoleCode } from '../common/constants/roles.js';
 import { PermissionCode } from '../common/constants/permissions.js';
-import { RequirePermission } from '../auth/decorators/require-permission.decorator.js';
+import { DocumentSocialService } from './document-social.service.js';
 
-/**
- * 文档接口（需 JWT；审核相关接口需 ROLE_REVIEWER 或 ROLE_ADMIN）
- *
- * 依赖：DocumentService（文档 CRUD / 状态流转）、DocumentReviewService（提审 / 审核 / 待办）。
- * 登录用户统一由 @CurrentUser() 注入，作者与操作人只在服务端写入，请求体无法指定。
- *
- * 坑：
- * - 路由按声明顺序匹配，静态路径（reviews/tasks、reviews/tasks/pending-count）必须写在
- *   @Get(':id') 之前，否则会被 :id 当作文档 ID 吃掉，表现为 404 或查错文档。
- * - 状态变更不要新增 PATCH 通道：publish / archive / save-draft / 审核接口才是状态机入口。
- * - 多权限码的 @RequirePermission 是「任一满足即可」，且 ROLE_ADMIN 自动放行。
- */
+/** 文档接口：JWT + 权限码；审核操作另需 ROLE_REVIEWER / ROLE_ADMIN */
 @Controller('documents')
 export class DocumentController {
   constructor(
     private readonly documentService: DocumentService,
     private readonly reviewService: DocumentReviewService,
+    private readonly social: DocumentSocialService,
   ) {}
 
   /** 创建文档 */
@@ -125,14 +116,20 @@ export class DocumentController {
 
   /** 当前待审记录（review_result IS NULL） */
   @Get(':id/reviews/current')
-  @RequirePermission(PermissionCode.documentList, PermissionCode.documentReview)
+  @RequirePermission(
+    PermissionCode.documentList,
+    PermissionCode.documentReview,
+  )
   getCurrentReview(@Param('id') id: string) {
     return this.reviewService.getCurrentReview(id);
   }
 
   /** 该文档全部审核历史，按 created_at 倒序 */
   @Get(':id/reviews/history')
-  @RequirePermission(PermissionCode.documentList, PermissionCode.documentReview)
+  @RequirePermission(
+    PermissionCode.documentList,
+    PermissionCode.documentReview,
+  )
   getReviewHistory(@Param('id') id: string) {
     return this.reviewService.getReviewHistory(id);
   }
@@ -171,20 +168,23 @@ export class DocumentController {
     );
   }
 
-  /**
-   * 查询文档详情（含正文）
-   * :id 通配必须最后声明；后续新增静态 GET 路由请一律加在这个方法之前
-   */
+  /** 查询文档详情（含正文） */
   @Get(':id')
   @RequirePermission(PermissionCode.documentList)
-  findOne(@Param('id') id: string) {
-    return this.documentService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    const doc = await this.documentService.findOne(id, true, user);
+    const flags = await this.social.flags(id, user.userId);
+    return { ...doc, ...flags };
   }
 
   /** 更新文档 */
   @Patch(':id')
   @RequirePermission(PermissionCode.documentEdit)
-  update(@Param('id') id: string, @Body() dto: UpdateDocumentDto, @CurrentUser() user: AuthUser) {
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateDocumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.documentService.update(id, dto, user);
   }
 
