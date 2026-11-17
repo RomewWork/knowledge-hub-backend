@@ -4,6 +4,7 @@ import { DocumentController } from './document.controller.js';
 import { DocumentContent, DocumentContentSchema } from './schemas/document-content.schema.js';
 import { MongooseModule } from '@nestjs/mongoose';
 import { FileParserService } from './parser/file-parser.service.js';
+import { MineruParser } from './parser/mineru.parser.js';
 import { DocumentReviewService } from './document-review.service.js';
 import { PipelineModule } from '../pipeline/pipeline.module.js';
 
@@ -24,7 +25,7 @@ import { PipelineModule } from '../pipeline/pipeline.module.js';
     PipelineModule,
   ],
   controllers: [DocumentController],
-  providers: [DocumentService, FileParserService, DocumentReviewService],
+  providers: [DocumentService, FileParserService, MineruParser, DocumentReviewService],
   exports: [DocumentService, FileParserService, DocumentReviewService],
 })
 export class DocumentModule {}

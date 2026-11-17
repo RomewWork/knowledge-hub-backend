@@ -1,40 +1,54 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { RustfsService } from '../../storage/rustfs.service.js';
-import { parseDocx } from './parsers/docx.parser.js';
-import { parsePdf } from './parsers/pdf.parser.js';
+import { MineruParser } from './mineru.parser.js';
 import { parsePlainText } from './parsers/plain-text.parser.js';
-import { parsePptx } from './parsers/pptx.parser.js';
-import { parseXlsx } from './parsers/xlsx.parser.js';
 import { getExtension } from './utils/markdown.util.js';
 
-/** 支持解析的文件扩展名 */
-const SUPPORTED_EXTENSIONS = new Set(['pdf', 'docx', 'xlsx', 'pptx', 'txt', 'md']);
+/**
+ * MinerU 精准解析支持的扩展名。
+ * 见 https://mineru.net/apiManage/docs ：PDF、图片、Doc/Docx、Ppt/PPTx、Xls/Xlsx。
+ */
+const MINERU_EXTENSIONS = new Set([
+  'pdf',
+  'png',
+  'jpg',
+  'jpeg',
+  'jp2',
+  'webp',
+  'gif',
+  'bmp',
+  'doc',
+  'docx',
+  'ppt',
+  'pptx',
+  'xls',
+  'xlsx',
+]);
 
-/** 解析入参：来自 multer 的内存文件（文件不落盘，直接传 Buffer） */
+/** txt / md 本地直读，不走 MinerU */
+const LOCAL_TEXT_EXTENSIONS = new Set(['txt', 'md']);
+
+const SUPPORTED_EXTENSIONS = new Set([
+  ...MINERU_EXTENSIONS,
+  ...LOCAL_TEXT_EXTENSIONS,
+]);
+
 export interface ParseInput {
-  /** 原始文件名，用来取扩展名并写日志 */
   originalname: string;
-  /** 文件完整字节内容 */
   buffer: Buffer;
-  /** 可选：文件字节数，调用方透传，解析逻辑本身不依赖 */
   size?: number;
 }
 
 /**
  * 文件 → Markdown 解析服务。
  *
- * 按扩展名分发到各 parser；PDF 在对象存储可用时注入图片上传回调。
- * 解析结果为空或格式不支持时抛 BadRequestException。
- *
- * 注意：分发表现在 SUPPORTED_EXTENSIONS 和 parse 的 switch 上，
- * MIME 不参与判定（上传的 mimetype 只用于原文件上传）；扩展名缺失或不支持会直接 400。
- * 所有 parser 统一产出 Markdown，上层拿到的就是可入库的正文。
+ * PDF / 图片 / Office 走 MinerU，结果 zip 里的图片上传 RustFS 并回写 Markdown。
+ * txt / md 按 UTF-8 原样读出。
  */
 @Injectable()
 export class FileParserService {
   private readonly logger = new Logger(FileParserService.name);
 
-  constructor(private readonly rustfs: RustfsService) {}
+  constructor(private readonly mineru: MineruParser) {}
 
   /** 是否为已支持的扩展名（大小写不敏感） */
   isSupported(extension: string): boolean {
@@ -49,9 +63,8 @@ export class FileParserService {
   /**
    * 将上传文件解析为 Markdown 字符串。
    *
-   * - pdf：可选提取图片并上传到 rustfs（`pdf-images/` 前缀）
-   * - xlsx：exceljs 优先，失败降级 officeparser（见 parseXlsxWithFallback）
-   * - pptx / docx / txt / md：直接调用对应 parser
+   * - pdf / 图片 / doc(x) / ppt(x) / xls(x)：MinerU 精准解析
+   * - txt / md：本地读取
    */
   async parse(file: ParseInput): Promise<string> {
     const extension = getExtension(file.originalname);
@@ -67,72 +80,21 @@ export class FileParserService {
     }
 
     const start = Date.now();
-    let result: string;
-
-    switch (extension) {
-      case 'docx':
-        result = await parseDocx(file.buffer);
-        break;
-      case 'pdf':
-        result = await parsePdf(file.buffer, {
-          // 存储未启用时不传 uploadImage，PDF 仅输出文本/表格
-          uploadImage: this.rustfs.isEnabled()
-            ? (bytes, fileName, contentType) =>
-                this.rustfs.uploadBytes(bytes, {
-                  fileName,
-                  contentType,
-                  prefix: 'pdf-images',
-                })
-            : undefined,
-        });
-        break;
-      case 'pptx':
-        result = await parsePptx(file.buffer);
-        break;
-      case 'txt':
-      case 'md':
-        result = parsePlainText(file.buffer);
-        break;
-      case 'xlsx':
-        result = await this.parseXlsxWithFallback(file.buffer);
-        break;
-      default:
-        throw new BadRequestException(`不支持的文件格式: ${extension}`);
-    }
+    const result = MINERU_EXTENSIONS.has(extension)
+      ? await this.mineru.parse(file)
+      : parsePlainText(file.buffer);
 
     const elapsed = Date.now() - start;
-
     this.logger.log(
       `文件解析完成: name=${file.originalname}, format=${extension}, chars=${result.length}, elapsed=${elapsed}ms`,
     );
 
     if (!result?.trim()) {
-      throw new BadRequestException('文件解析结果为空，请确认文件包含可提取的文本内容');
+      throw new BadRequestException(
+        '文件解析结果为空，请确认文件包含可提取的文本内容',
+      );
     }
 
     return result;
-  }
-
-  /**
-   * XLSX：exceljs 优先（结构化表格 Markdown）；
-   * 失败时降级 officeparser AST → md，保证兼容异常/损坏文件。
-   */
-
-  private async parseXlsxWithFallback(buffer: Buffer): Promise<string> {
-    try {
-      const start = Date.now();
-      const result = await parseXlsx(buffer);
-      this.logger.log(
-        `XLSX(exceljs) 解析成功: chars=${result.length}, elapsed=${Date.now() - start}ms`,
-      );
-      return result;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      this.logger.warn(`XLSX(exceljs) 解析失败，降级 officeparser: ${message}`);
-      const { parseOffice } = await import('officeparser');
-      const ast = await parseOffice(buffer, { fileType: 'xlsx' });
-      const { value } = await ast.to('md');
-      return value ?? '';
-    }
   }
 }
